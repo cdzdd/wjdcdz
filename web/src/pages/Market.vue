@@ -1,0 +1,16 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+import { api } from '../api'
+import { usePage, perform, busy } from '../state'
+import { decimal, label, fundTypes, stateTone } from '../domain'
+import type { Row } from '../domain'
+import PageHeader from '../components/PageHeader.vue'
+import LoadState from '../components/LoadState.vue'
+import TradeDialog from '../components/TradeDialog.vue'
+const funds = ref<Row[]>([]), favorites = ref<number[]>([]), search = ref(''), type = ref(''), onlyFavorites = ref(false), selected = ref<Row | null>(null), trade = ref(false)
+const { loading, error, load } = usePage(async () => { [funds.value, favorites.value] = await Promise.all([api.get('/funds'), api.get('/favorites')]) })
+const visible = computed(() => funds.value.filter(f => (f.name + f.code).toLowerCase().includes(search.value.toLowerCase()) && (!type.value || f.type === type.value) && (!onlyFavorites.value || favorites.value.includes(f.id))))
+async function favorite(fund: Row) { await perform(() => favorites.value.includes(fund.id) ? api.delete('/favorites/' + fund.id) : api.put('/favorites/' + fund.id), load) }
+function buy(fund: Row) { selected.value = fund; trade.value = true }
+</script>
+<template><PageHeader title="基金市场" subtitle="了解产品、风险与费率，再做模拟决策。"><button class="button" @click="load">刷新市场</button></PageHeader><LoadState :loading="loading" :error="error" @retry="load"/><div class="toolbar filters"><input v-model="search" placeholder="搜索基金名称或代码" aria-label="搜索基金"/><select v-model="type" aria-label="基金类型"><option value="">所有基金类型</option><option v-for="t in fundTypes" :key="t.value" :value="t.value">{{ t.label }}</option></select><button class="button" :class="{primary:onlyFavorites}" @click="onlyFavorites = !onlyFavorites">{{ onlyFavorites ? '★ 我的自选' : '☆ 只看自选' }}</button><span class="muted">{{ visible.length }} 只产品</span></div><div class="fund-card-grid"><article v-for="fund in visible" :key="fund.id" class="fund-card"><div class="fund-meta"><span class="inline-tag">{{ label(fund.type) }}</span><button class="text-button" :disabled="busy > 0" :aria-label="favorites.includes(fund.id) ? '移出自选' : '加入自选'" @click="favorite(fund)">{{ favorites.includes(fund.id) ? '★ 已自选' : '☆ 自选' }}</button></div><h3><RouterLink :to="'/funds/' + fund.id">{{ fund.name }}</RouterLink></h3><p class="muted small">{{ fund.code }} · {{ fund.manager }}</p><div class="fund-value">{{ decimal(fund.nav, 6) }}</div><p class="muted small">{{ fund.type === 'MONEY' ? '模拟固定份额净值' : '已公布单位净值' }} · {{ fund.navDate || '暂无数据' }}</p><div class="fund-meta"><span class="status" :class="stateTone(fund.state)">{{ label(fund.state) }}</span><span class="muted small">风险 R{{ fund.riskLevel }} · {{ decimal(fund.minPurchase) }} 元起</span></div><div class="toolbar"><button class="button primary" :disabled="(!fund.purchaseOpen && fund.state !== 'RAISING') || fund.state === 'TERMINATED' || fund.state === 'LIQUIDATED'" @click="buy(fund)">{{ fund.state === 'RAISING' ? '认购' : '申购' }}</button><RouterLink class="button" :to="'/funds/' + fund.id">产品详情</RouterLink></div></article></div><div v-if="!visible.length && !loading" class="empty">未找到符合条件的基金，试试其他筛选条件。</div><TradeDialog v-model="trade" :fund="selected" :offering="selected?.state === 'RAISING'" @submitted="load"/></template>

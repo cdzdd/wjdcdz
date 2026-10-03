@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: ${DB_TEST_URL:jdbc:mysql://127.0.0.1:13306/fund_sim_test?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${DB_USER:fund_app}
+    password: ${DB_PASSWORD:}
+fund:
+  demo: true
+  scheduler:
+    enabled: false

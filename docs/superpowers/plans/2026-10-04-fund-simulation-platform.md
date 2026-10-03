@@ -1,5 +1,7 @@
 # 基金销售与模拟交易平台实现计划
 
+本计划已推进到本地实现与运行验收。实际文件、接口及必要的模拟规则调整见[本地验收记录](../../acceptance.md)及[API说明](../../implementation-contract.md)。原任务列表保留为规划依据，公开部署与CI配置不属于本轮本地验收。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 实现可以上线持续使用的基金模拟平台，完整覆盖用户投资操作、后台登记确认及日常运营。

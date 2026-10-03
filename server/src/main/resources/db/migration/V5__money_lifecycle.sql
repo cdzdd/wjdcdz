@@ -1,0 +1,5 @@
+ALTER TABLE money_income_snapshots
+ ADD COLUMN applied_shares DECIMAL(24,4) NOT NULL DEFAULT 0,
+ ADD COLUMN cash_adjustment DECIMAL(20,2) NOT NULL DEFAULT 0,
+ ADD COLUMN reason VARCHAR(500) NULL;
+ALTER TABLE fund_classes ADD COLUMN terminated_at DATETIME NULL;

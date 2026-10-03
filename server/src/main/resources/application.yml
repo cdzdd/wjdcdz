@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: fund-simulation
+  profiles:
+    default: local
+  datasource:
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:13306/fund_sim?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${DB_USER:fund_app}
+    password: ${DB_PASSWORD:}
+  session:
+    jdbc:
+      initialize-schema: never
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 5MB
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:8080}
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${COOKIE_SECURE:false}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+fund:
+  demo: false
+---
+spring:
+  config:
+    activate:
+      on-profile: local,demo
+fund:
+  demo: true

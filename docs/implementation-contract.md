@@ -1,6 +1,6 @@
-# 本地实现接口契约
+# 本地平台 API 说明
 
-本文件协调并行开发，设计及第二版计划仍是业务依据。统一JSON字段camelCase；金融数值输出十进制字符串。API成功直接返回对象或数组（不套额外data）；错误为 `{code,message,requestId}`。默认服务8080，Vite5173代理/api。用户与管理员在同一Vue网站。
+统一JSON字段camelCase；金融数值输出十进制字符串。API成功直接返回对象或数组（不套额外data）；错误为 `{code,message,requestId}`。默认服务8080，Vite5173代理/api。用户与管理员在同一Vue网站。实现与验收说明见acceptance.md。
 
 ## 登录
 
@@ -54,11 +54,13 @@
 - GET /api/admin/reconciliation -> {ok,issues:[...]}; GET/POST /api/admin/announcements {title,body}。
 - GET /api/admin/clock -> {dateTime,demo}；POST /api/admin/clock {dateTime:"yyyy-MM-ddTHH:mm:ss"}仅demo可用。
 
-## 并行文件边界
+## 模块职责
 
-后端核心负责server构建、主程序、schema、基础配置、安全、用户、多卡、产品、交易、批次、钱包和清算。根代理实现独立AdvancedService与AdvancedController及扩展schema迁移，消费核心Db/Account/Trade服务。前端负责web目录全部；运行环境负责scripts、deploy、README和本地MySQL。各实现者不得修改另一个人的目录；接口更改先消息协调。
+server包含账户、产品、交易、清算与扩展业务，web包含投资者端与后台界面，scripts提供Windows本地运行，deploy提供后续部署模板。金额和份额由后端核算，来源与幂等标识保留到数据库。
 
 ## 后端共享接口
+
+另提供 `GET /api/admin/cash-entries`、`GET /api/admin/corrections` 和管理员专用 `POST /api/admin/corrections {originalEntryId,availableDelta,reason,requestKey}`。更正原记录不变，新增关联差额。完整路径以CoreController与AdvancedController的映射为准。
 
 核心提供public Db类：`rows(String sql,Object...args): List<Map<String,Object>>`（camelCase键，BigDecimal字符串）；`one(String sql,Object...args): Map<String,Object>`（无记录报404）；`scalar(String sql,Object...args): BigDecimal`（空为0）；`insert(String sql,Object...args): long`（生成ID）；`update(String sql,Object...args): int`；`decimal(Object value): BigDecimal`静态；`money(BigDecimal value): BigDecimal`静态；所有SQL参数绑定。
 
