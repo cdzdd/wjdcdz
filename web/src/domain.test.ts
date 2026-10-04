@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildOrderPayload, buildRedemptionGroup, decimal, percent } from './domain'
+import { buildOrderPayload, buildRedemptionGroup, decimal, jobOutcome, percent } from './domain'
 
 describe('显式交易来源', () => {
   it('提交选定账户和卡版本，后续默认账户变化不能改写申请', () => {
@@ -33,5 +33,26 @@ describe('金融展示', () => {
     expect(decimal(null)).toBe('—')
     expect(decimal('1.234567', 4)).toBe('1.2346')
     expect(percent('0.015')).toBe('1.50%')
+  })
+})
+
+describe('任务批次结果', () => {
+  it('历史 COMPLETED 记录的三个计数全零时明确没有待处理业务', () => {
+    expect(jobOutcome({ status: 'COMPLETED', processed: 0, waiting: 0, failed: 0 })).toBe('NO_WORK')
+  })
+  it('没有成功项但存在等待项时保留等待结果', () => {
+    expect(jobOutcome({ status: 'COMPLETED', processed: 0, waiting: 3, failed: 0 })).toBe('WAITING')
+  })
+  it('存在失败且没有成功项时显示失败，优先于等待', () => {
+    expect(jobOutcome({ processed: 0, waiting: 2, failed: 1 })).toBe('FAILED')
+  })
+  it('成功与失败并存时显示部分失败', () => {
+    expect(jobOutcome({ processed: 2, waiting: 1, failed: 1 })).toBe('PARTIAL')
+  })
+  it('有成功项和等待项时仍显示等待处理', () => {
+    expect(jobOutcome({ processed: 2, waiting: 1, failed: 0 })).toBe('WAITING')
+  })
+  it('仅有成功项时显示已完成', () => {
+    expect(jobOutcome({ processed: 4, waiting: 0, failed: 0 })).toBe('COMPLETED')
   })
 })

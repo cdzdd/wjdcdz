@@ -142,9 +142,25 @@ public class TradeService {
     public Map<String,Object> run(String type,LocalDate date){
         if(date.isAfter(account.clock().toLocalDate()))throw ApiException.conflict("不能处理未来日期的任务");int processed=0,waiting=0,failed=0;List<String> details=new ArrayList<>();
         if(Set.of("MARKET","ALL").contains(type))processed+=funds.market(date);
-        if(Set.of("CONFIRM","ALL").contains(type))for(var o:db.rows("SELECT id FROM orders WHERE status='SUBMITTED' AND type IN('PURCHASE','REDEMPTION') AND confirmation_date<=? ORDER BY confirmation_date,id",date)){try{if(confirmOne(Db.id(o.get("id"))))processed++;else waiting++;}catch(Exception ex){failed++;details.add("订单"+o.get("id")+"："+ex.getMessage());}}
-        if(Set.of("PAY","ALL").contains(type))for(var p:db.rows("SELECT id FROM payouts WHERE status!='PAID' AND due_date<=? ORDER BY due_date,id",date)){try{if(payOne(Db.id(p.get("id"))))processed++;else waiting++;}catch(Exception ex){failed++;details.add("付款"+p.get("id")+"："+ex.getMessage());}}
-        db.insert("INSERT INTO job_runs(type,date,status,processed,waiting,failed,details,created_at) VALUES(?,?,?,?,?,?,?,?)",type,date,failed>0?"PARTIAL":"COMPLETED",processed,waiting,failed,String.join("\n",details),account.clock());return Map.of("processed",processed,"waiting",waiting,"failed",failed,"details",details);
+        if(Set.of("CONFIRM","ALL").contains(type))for(var o:db.rows("SELECT id FROM orders WHERE status='SUBMITTED' AND type IN('PURCHASE','REDEMPTION') AND confirmation_date<=? ORDER BY confirmation_date,id",date)) {
+            try {
+                if(confirmOne(Db.id(o.get("id")))) processed++;
+                else {
+                    var state=db.one("SELECT status,reason FROM orders WHERE id=?",o.get("id"));
+                    if("SUBMITTED".equals(state.get("status"))) { waiting++;details.add("订单"+o.get("id")+"："+Objects.requireNonNullElse(state.get("reason"),"尚未到计划确认时间")); }
+                }
+            } catch(Exception ex) { failed++;details.add("订单"+o.get("id")+"："+ex.getMessage()); }
+        }
+        if(Set.of("PAY","ALL").contains(type))for(var p:db.rows("SELECT id FROM payouts WHERE status!='PAID' AND due_date<=? ORDER BY due_date,id",date)) {
+            try {
+                if(payOne(Db.id(p.get("id")))) processed++;
+                else {
+                    var state=db.one("SELECT status,reason FROM payouts WHERE id=?",p.get("id"));
+                    if(!"PAID".equals(state.get("status"))) { waiting++;details.add("付款"+p.get("id")+"："+Objects.requireNonNullElse(state.get("reason"),"尚未到计划支付时间")); }
+                }
+            } catch(Exception ex) { failed++;details.add("付款"+p.get("id")+"："+ex.getMessage()); }
+        }
+        return Map.of("processed",processed,"waiting",waiting,"failed",failed,"details",details);
     }
     public void event(long oid,String event){db.update("INSERT IGNORE INTO order_events(order_id,event_type,created_at) VALUES(?,?,?)",oid,event,account.clock());}
     public void refreshGroup(Map<String,Object> o){if(o.get("groupId")==null)return;long gid=Db.id(o.get("groupId"));var children=db.rows("SELECT status FROM orders WHERE group_id=?",gid);boolean done=children.stream().allMatch(c->Set.of("COMPLETED","CANCELLED").contains(c.get("status"))),bad=children.stream().anyMatch(c->"FAILED".equals(c.get("status")));db.update("UPDATE order_groups SET status=? WHERE id=?",bad?"PARTIAL_FAILED":done?"COMPLETED":"PROCESSING",gid);}

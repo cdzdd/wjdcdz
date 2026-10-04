@@ -55,14 +55,15 @@ class SipService {
         s.changed("CHANGE_SIP","SIP",id,status);return s.db.one("SELECT * FROM sip_plans WHERE id=?",id);
     }
     Map<String,Object> run(LocalDate date) {
-        if(!s.due(date,10)) return Map.of("processed",0,"waiting",1,"failed",0);
         int done=0,failed=0,waiting=0;
+        var details=new java.util.ArrayList<String>();
         for(var plan:s.db.rows("SELECT * FROM sip_plans WHERE status='ACTIVE' ORDER BY id")) {
                 LocalDate period=latestPeriod(plan,date);
                 if(period==null) continue;
                 long pid=id(plan,"id");LocalDate actualDay=s.now().toLocalDate();
                 if(!s.db.rows("SELECT id FROM sip_runs WHERE plan_id=? AND scheduled_date=?",pid,period).isEmpty()) continue;
-                if(s.db.scalar("SELECT COUNT(*) FROM sip_runs r JOIN orders o ON o.id=r.order_id WHERE r.plan_id=? AND o.status='SUBMITTED'",pid).signum()>0) { waiting++;continue; }
+                if(!s.due(s.openDate(period),10)) { waiting++;details.add("定投计划"+pid+"：尚未到执行日10:00");continue; }
+                if(s.db.scalar("SELECT COUNT(*) FROM sip_runs r JOIN orders o ON o.id=r.order_id WHERE r.plan_id=? AND o.status='SUBMITTED'",pid).signum()>0) { waiting++;details.add("定投计划"+pid+"：前一期申购仍待确认");continue; }
                 try {
                     boolean created=s.tx(()-> {
                         var locked=s.db.one("SELECT * FROM sip_plans WHERE id=? FOR UPDATE",pid);
@@ -80,10 +81,10 @@ class SipService {
                     int inserted=s.tx(()-> {
                         int count=s.db.update("INSERT IGNORE INTO sip_runs(plan_id,scheduled_date,execution_date,status,reason,created_at) VALUES(?,?,?,'FAILED',?,?)",pid,period,actualDay,String.valueOf(ex.getMessage()).substring(0,Math.min(450,String.valueOf(ex.getMessage()).length())),s.now());
                         if(count>0) s.accounts.notifyUser(id(plan,"userId"),"SIP_FAILED",pid+"-"+period,"定投当期未扣款",String.valueOf(ex.getMessage()));return count;
-                    });failed+=inserted;
+                    });failed+=inserted;if(inserted>0)details.add("定投计划"+pid+"："+ex.getMessage());
                 }
         }
-        return Map.of("processed",done,"waiting",waiting,"failed",failed);
+        return Map.of("processed",done,"waiting",waiting,"failed",failed,"details",details);
     }
     private LocalDate latestPeriod(Map<String,Object> plan,LocalDate through) {
         LocalDate start=date(plan.get("startDate"));

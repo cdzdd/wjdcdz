@@ -91,12 +91,18 @@ class DividendService {
     Map<String,Object> execute(long eventId) {
         var event=s.db.one("SELECT * FROM dividend_events WHERE id=?",eventId);
         if("DRAFT".equals(event.get("status"))) throw new IllegalArgumentException("请先登记权益快照");
-        int done=0,wait=0;
+        int done=0,wait=0,failed=0;var details=new java.util.ArrayList<String>();var waitingIds=new java.util.ArrayList<Long>();
         for(var row:s.db.rows("SELECT id FROM dividend_entitlements WHERE event_id=? AND status='PENDING' ORDER BY id",eventId)) {
-            if(s.tx(()->executeOne(id(row,"id"),event))) done++; else wait++;
+            try {
+                if(s.tx(()->executeOne(id(row,"id"),event))) done++;
+                else if("PENDING".equals(s.db.one("SELECT status FROM dividend_entitlements WHERE id=?",row.get("id")).get("status"))) {
+                    wait++;waitingIds.add(id(row,"id"));
+                }
+            }
+            catch(RuntimeException ex) { failed++;details.add("分红权益"+row.get("id")+"："+ex.getMessage()); }
         }
-        if(wait==0) s.db.update("UPDATE dividend_events SET status='COMPLETED' WHERE id=?",eventId);
-        return Map.of("processed",done,"waiting",wait,"failed",0);
+        if(wait==0 && failed==0) s.db.update("UPDATE dividend_events SET status='COMPLETED' WHERE id=?",eventId);
+        return Map.of("processed",done,"waiting",wait,"failed",failed,"details",details,"waitingIds",waitingIds);
     }
     private boolean executeOne(long eid,Map<String,Object> event) {
         var right=s.db.one("SELECT * FROM dividend_entitlements WHERE id=? FOR UPDATE",eid);

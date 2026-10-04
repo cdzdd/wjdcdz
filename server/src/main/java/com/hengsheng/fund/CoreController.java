@@ -111,16 +111,23 @@ public class CoreController {
     @GetMapping("/admin/trading-calendar") public List<Map<String,Object>> calendar(){account.requireRole("OPERATOR");return db.rows("SELECT * FROM trading_calendar WHERE date>=? ORDER BY date LIMIT 500",account.clock().toLocalDate().minusDays(30));}
     @PostMapping("/admin/trading-calendar") @Transactional public Map<String,Object> saveCalendar(@RequestBody Map<String,Object> input){account.requireRole("OPERATOR");LocalDate date=LocalDate.parse(Db.text(input,"date"));if(db.scalar("SELECT COUNT(*) FROM orders WHERE application_date=?",date).signum()>0)throw ApiException.conflict("已有申请归属该日，不能修改日历");db.update("INSERT INTO trading_calendar(date,open) VALUES(?,?) ON DUPLICATE KEY UPDATE open=VALUES(open)",date,Db.yes(input.get("open")));account.audit("CALENDAR","CALENDAR",0,date.toString());return input;}
     @GetMapping("/admin/jobs") public List<Map<String,Object>> jobs(){account.requireRole("OPERATOR");return db.rows("SELECT * FROM job_runs ORDER BY id DESC LIMIT 500");}
+    @GetMapping("/admin/jobs/context") public Map<String,Object> jobContext(){account.requireRole("OPERATOR");return Map.of("businessTime",account.clock().toString(),"actualTime",LocalDateTime.now(ZoneId.of("Asia/Shanghai")).toString(),"demo",account.isDemo());}
     @PostMapping("/admin/jobs") public Map<String,Object> jobs(@RequestBody Map<String,Object> input){account.requireRole("OPERATOR");return runJobs(Db.text(input,"type"),LocalDate.parse(Db.text(input,"date")));}
     public Map<String,Object> runJobs(String type,LocalDate date){if(!Set.of("CONFIRM","PAY","SIP","MONEY","MARKET","ALL").contains(type))throw ApiException.bad("任务类型无效");
         if(date.isAfter(account.clock().toLocalDate()))throw ApiException.conflict("不能处理未来日期的任务");
+        LocalDateTime actualRunAt=LocalDateTime.now(ZoneId.of("Asia/Shanghai")),businessTime=account.clock();
         int processed=0,waiting=0,failed=0;List<Object> details=new ArrayList<>();
         List<Map<String,Object>> results=new ArrayList<>();
-        if(type.equals("ALL")){results.add(trades.run("MARKET",date));results.add(trades.run("CONFIRM",date));}else if(!type.equals("PAY"))results.add(trades.run(type,date));
-        var service=advanced.getIfAvailable();if(service!=null)results.add(service.run(type,date));
-        if(Set.of("PAY","ALL").contains(type)){results.add(trades.run("PAY",date));if(service!=null)service.syncPayments();}
+        try {
+            if(type.equals("ALL")){results.add(trades.run("MARKET",date));results.add(trades.run("CONFIRM",date));}else if(!type.equals("PAY"))results.add(trades.run(type,date));
+            var service=advanced.getIfAvailable();if(service!=null)results.add(service.run(type,date));
+            if(Set.of("PAY","ALL").contains(type)){results.add(trades.run("PAY",date));if(service!=null){service.syncPayments();results.forEach(service::refreshDividendWaiting);}}
+        } catch(RuntimeException ex) { failed++;details.add("批次执行异常："+Objects.requireNonNullElse(ex.getMessage(),ex.getClass().getSimpleName())); }
         for(var result:results){processed+=((Number)result.get("processed")).intValue();waiting+=((Number)result.get("waiting")).intValue();failed+=((Number)result.get("failed")).intValue();if(result.get("details") instanceof List<?> d)details.addAll(d);}
-        return Map.of("processed",processed,"waiting",waiting,"failed",failed,"details",details);
+        String status=failed>0?(processed>0?"PARTIAL":"FAILED"):waiting>0?"WAITING":processed>0?"COMPLETED":"NO_WORK";
+        if(status.equals("NO_WORK"))details.add("本次无到期或新增的可处理业务；已完成的数据不会重复处理。");
+        long jobId=db.insert("INSERT INTO job_runs(type,date,status,processed,waiting,failed,details,created_at,actual_run_at) VALUES(?,?,?,?,?,?,?,?,?)",type,date,status,processed,waiting,failed,String.join("\n",details.stream().map(Object::toString).toList()),businessTime,actualRunAt);
+        return Map.of("processed",processed,"waiting",waiting,"failed",failed,"details",details,"status",status,"jobId",jobId,"businessTime",businessTime.toString(),"actualRunAt",actualRunAt.toString());
     }
     @GetMapping("/admin/payouts") public List<Map<String,Object>> payouts(){account.requireRole("OPERATOR");return db.rows("SELECT p.*,o.sim_number source_card_number,t.sim_number target_card_number,a.account_no FROM payouts p JOIN bank_cards o ON o.id=p.source_card_id JOIN bank_cards t ON t.id=p.target_card_id JOIN trading_accounts a ON a.id=p.trading_account_id ORDER BY p.id DESC LIMIT 1000");}
     @GetMapping("/admin/card-change-requests") public List<Map<String,Object>> adminChanges(){account.requireRole("ADMIN");return db.rows(changes.query()+" ORDER BY r.id DESC LIMIT 500");}

@@ -20,10 +20,17 @@ foreach ($target in $targets) {
         & (Join-Path $config.mysqlHome 'bin\mysqladmin.exe') "--defaults-file=$runtime\mysql-root.cnf" shutdown
         if ($LASTEXITCODE -ne 0) { throw 'Graceful database shutdown failed; no other MySQL process was stopped.' }
     } else {
-        Stop-Process -Id $processId -Force -ErrorAction Stop
-        Wait-Process -Id $processId -Timeout 15 -ErrorAction SilentlyContinue
-        $remaining = Get-Process -Id $processId -ErrorAction SilentlyContinue
-        if ($remaining -and -not $remaining.HasExited) { throw "Project process did not stop: $($target.name). PID file was retained." }
+        # Oracle javapath can start the JVM as a child of the recorded launcher.
+        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$processId" | Where-Object {
+            $_.Name -eq $target.exe -and $_.CommandLine -and $_.CommandLine.Contains($target.marker)
+        })
+        foreach ($ownedId in @($children | ForEach-Object { $_.ProcessId }) + @($processId)) {
+            if (-not (Get-Process -Id $ownedId -ErrorAction SilentlyContinue)) { continue }
+            Stop-Process -Id $ownedId -Force -ErrorAction Stop
+            Wait-Process -Id $ownedId -Timeout 15 -ErrorAction SilentlyContinue
+            $remaining = Get-Process -Id $ownedId -ErrorAction SilentlyContinue
+            if ($remaining -and -not $remaining.HasExited) { throw "Project process did not stop: $($target.name). PID file was retained." }
+        }
     }
     [IO.File]::WriteAllText($file,'0')
     Write-Output "Stopped project process: $($target.name)."

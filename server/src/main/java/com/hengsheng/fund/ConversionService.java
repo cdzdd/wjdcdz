@@ -86,11 +86,17 @@ class ConversionService {
         s.changed("CANCEL_CONVERSION","CONVERSION",cid,"用户撤单");return s.db.one("SELECT * FROM conversions WHERE id=?",cid);
     }
     Map<String,Object> run(LocalDate date) {
-        int done=0,waiting=0;
+        int done=0,waiting=0,failed=0;var details=new java.util.ArrayList<String>();
         for(var row:s.db.rows("SELECT id FROM conversions WHERE status='SUBMITTED' AND confirmation_date<=? ORDER BY id",date)) {
-            if(s.tx(()->confirm(id(row,"id")))) done++; else waiting++;
+            try {
+                if(s.tx(()->confirm(id(row,"id")))) done++;
+                else {
+                    var state=s.db.one("SELECT status,reason FROM conversions WHERE id=?",row.get("id"));
+                    if("SUBMITTED".equals(state.get("status"))) { waiting++;details.add("转换"+row.get("id")+"："+java.util.Objects.requireNonNullElse(state.get("reason"),"尚未到计划确认时间")); }
+                }
+            } catch(RuntimeException ex) { failed++;details.add("转换"+row.get("id")+"："+ex.getMessage()); }
         }
-        return Map.of("processed",done,"waiting",waiting,"failed",0);
+        return Map.of("processed",done,"waiting",waiting,"failed",failed,"details",details);
     }
     private boolean confirm(long id) {
         var context=s.db.one("SELECT source_class_id,target_class_id FROM conversions WHERE id=?",id);
