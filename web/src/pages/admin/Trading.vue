@@ -8,6 +8,7 @@ import PageHeader from '../../components/PageHeader.vue'
 import DataTable from '../../components/DataTable.vue'
 import LoadState from '../../components/LoadState.vue'
 const tab=ref('jobs'),jobs=ref<Row[]>([]),orders=ref<Row[]>([]),positions=ref<Row[]>([]),payouts=ref<Row[]>([]),plans=ref<Row[]>([]),date=ref(''),type=ref('ALL'),result=ref<Row|null>(null),detail=ref<Row|null>(null),detailOpen=ref(false),detailIsJob=ref(false),context=ref<Row|null>(null)
+const countItems=[{key:'processed',label:'成功',tone:'success'},{key:'waiting',label:'等待',tone:'warning'},{key:'failed',label:'失败',tone:'danger'}]
 let dateInitialized=false
 const {loading,error,load}=usePage(async()=>{
   [jobs.value,orders.value,positions.value,payouts.value,plans.value,context.value]=await Promise.all([api.get('/admin/jobs'),api.get('/admin/orders'),api.get('/admin/positions'),api.get('/admin/payouts'),api.get('/sip-plans'),api.get('/admin/jobs/context')])
@@ -52,7 +53,7 @@ function reasons(row:Row):string[]{
       <p v-if="type==='MONEY'||type==='ALL'" class="muted small" style="margin-top:14px">货币收益按所选业务日期的前一自然日结转。例如选择10月15日，会处理10月14日收益。</p>
       <div v-if="result" class="job-result" aria-live="polite">
         <h3>本次执行：{{ label(jobOutcome(result)) }}</h3>
-        <span class="inline-tag">成功处理项 {{ result.processed }}</span><span class="inline-tag">等待处理项 {{ result.waiting }}</span><span class="inline-tag">失败处理项 {{ result.failed }}</span>
+        <div class="job-counts"><span v-for="item in countItems.filter(item=>result![item.key]>0)" :key="item.key" class="status" :class="item.tone">{{ item.label }} {{ result[item.key] }} 项</span><span v-if="jobOutcome(result)==='NO_WORK'" class="muted">本次无需处理</span></div>
         <p class="muted">{{ taskLabel(result.type) }} · 业务日期 {{ result.date }} · 实际运行时间 {{ cell(result.actualRunAt,'date') }} · 业务时钟 {{ cell(result.businessTime,'date') }}</p>
         <ul class="job-reasons"><li v-for="(reason,index) in reasons(result)" :key="index">{{ reason }}</li></ul>
       </div>
@@ -60,9 +61,10 @@ function reasons(row:Row):string[]{
     <section class="panel">
       <h2>任务历史</h2>
       <p class="notice">以下计数是每次执行批次的处理项数，不是累计订单数；处理项可能是订单、付款、定投或收益等业务。自动任务每5分钟检查一次，无待处理业务的空批次属于正常情况。旧记录不会追溯重算。</p>
-      <DataTable :rows="jobs" :columns="[{key:'id',label:'任务ID'}, {key:'type',label:'类型'}, {key:'date',label:'业务日期'}, {key:'outcome',label:'执行结果'}, {key:'processed',label:'成功处理项'}, {key:'waiting',label:'等待处理项'}, {key:'failed',label:'失败处理项'}, {key:'actualRunAt',label:'实际运行时间'}, {key:'createdAt',label:'业务时钟',kind:'date'}]">
+      <DataTable :rows="jobs" :columns="[{key:'id',label:'任务ID'}, {key:'type',label:'类型'}, {key:'date',label:'业务日期'}, {key:'outcome',label:'执行结果'}, {key:'counts',label:'处理情况'}, {key:'actualRunAt',label:'实际运行时间'}, {key:'createdAt',label:'业务时钟',kind:'date'}]">
         <template #cell-type="{row}">{{ taskLabel(row.type) }}</template>
         <template #cell-outcome="{row}"><span class="status" :class="outcomeTone(row)">{{ label(jobOutcome(row)) }}</span></template>
+        <template #cell-counts="{row}"><div class="job-counts"><span v-for="item in countItems.filter(item=>row[item.key]>0)" :key="item.key" class="status" :class="item.tone">{{ item.label }} {{ row[item.key] }} 项</span><span v-if="jobOutcome(row)==='NO_WORK'" class="muted">本次无需处理</span></div></template>
         <template #cell-actualRunAt="{row}">{{ row.actualRunAt?cell(row.actualRunAt,'date'):'旧记录未采集' }}</template>
         <template #actions="{row}"><button class="text-button" @click="inspect(row,true)">结果详情</button></template>
       </DataTable>
@@ -77,7 +79,7 @@ function reasons(row:Row):string[]{
       <dl class="job-summary">
         <dt>任务ID</dt><dd>{{ detail.id }}</dd><dt>任务类型</dt><dd>{{ taskLabel(detail.type) }}</dd>
         <dt>业务日期</dt><dd>{{ detail.date }}</dd><dt>执行结果</dt><dd>{{ label(jobOutcome(detail)) }}</dd>
-        <dt>成功处理项</dt><dd>{{ detail.processed }}</dd><dt>等待处理项</dt><dd>{{ detail.waiting }}</dd><dt>失败处理项</dt><dd>{{ detail.failed }}</dd>
+        <dt>处理情况</dt><dd class="job-counts"><span v-for="item in countItems.filter(item=>detail![item.key]>0)" :key="item.key" class="status" :class="item.tone">{{ item.label }} {{ detail[item.key] }} 项</span><span v-if="jobOutcome(detail)==='NO_WORK'" class="muted">本次无需处理</span></dd>
         <dt>实际运行时间</dt><dd>{{ detail.actualRunAt?cell(detail.actualRunAt,'date'):'旧记录未采集' }}</dd><dt>业务时钟</dt><dd>{{ cell(detail.createdAt,'date') }}</dd>
       </dl>
       <h3>处理说明与原因</h3><ul class="job-reasons"><li v-for="(reason,index) in reasons(detail)" :key="index">{{ reason }}</li></ul>
@@ -89,6 +91,7 @@ function reasons(row:Row):string[]{
 .clock-context p{margin-bottom:8px}
 .job-result{margin-top:22px}
 .job-result h3{margin-bottom:12px}
+.job-counts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .job-summary{display:grid;grid-template-columns:110px 1fr;gap:10px 16px;margin:0 0 24px;font-size:13px}
 .job-summary dt{color:var(--muted)}
 .job-summary dd{margin:0;overflow-wrap:anywhere}
