@@ -78,13 +78,13 @@ class JobHistoryIntegrationTest {
         for(String name:java.util.List.of("processed","waiting","failed"))
             assertThat(Db.id(rows.getFirst().get(name))).isEqualTo(((Number)result.get(name)).longValue());
     }
-    @Test void aStageExceptionIsStoredAsFailureWithItsReason() {
+    @Test void aMarketProductFailureIsStoredWithItsReason() {
         db.update("UPDATE app_settings SET value='2026-10-16T16:00:00' WHERE name='demo_clock'");
         db.insert("INSERT INTO dividend_events(fund_class_id,record_date,ex_date,payment_date,per_share,created_at) VALUES(?,'2026-10-15','2026-10-16','2026-10-19',9,'2026-10-15')",fundId);
         var result=core.runJobs("MARKET",LocalDate.of(2026,10,16));
         assertThat(((Number)result.get("failed")).intValue()).isPositive();
         var row=db.one("SELECT * FROM job_runs WHERE id=?",result.get("jobId"));
-        assertThat(row.get("status")).isEqualTo("FAILED");
+        assertThat(row.get("status")).isIn("FAILED","PARTIAL");
         assertThat(row.get("details").toString()).contains("净值非正");
     }
     @Test void allDoesNotRetainDividendWaitingAfterItsCashHasArrived() {

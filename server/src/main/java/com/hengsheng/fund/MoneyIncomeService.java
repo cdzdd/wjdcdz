@@ -48,8 +48,8 @@ public class MoneyIncomeService {
                 if(s.now().isBefore(day.plusDays(1).atTime(0,10))) { waiting++; break; }
                 LocalDate current=day;
                 try {
-                    var result=s.tx(()->processDay(fid,current));
-                    processed+=result[0];waiting+=result[1];
+                    var result=processDay(fid,current,details);
+                    processed+=result[0];waiting+=result[1];failed+=result[3];
                     if(result[2]==0) break;
                 } catch(Exception ex) { failed++;details.add(fid+"/"+day+"："+ex.getMessage());break; }
             }
@@ -57,32 +57,39 @@ public class MoneyIncomeService {
         return Map.of("processed",processed,"waiting",waiting,"failed",failed,"details",details);
     }
 
-    private int[] processDay(long fid,LocalDate day) {
-        s.db.one("SELECT id FROM fund_classes WHERE id=? FOR UPDATE",fid);
+    private int[] processDay(long fid,LocalDate day,List<String> details) {
         var groups=eligible(fid,day);
-        if(groups.isEmpty()) return new int[]{0,0,1};
-        var rates=s.db.rows("SELECT * FROM money_income_records WHERE fund_class_id=? AND date=? FOR UPDATE",fid,day);
-        if(rates.isEmpty()) return new int[]{0,1,0};
-        BigDecimal rate=decimal(rates.getFirst().get("incomePerTenThousand"));
-        int processed=0,waiting=0;
+        if(groups.isEmpty()) return new int[]{0,0,1,0};
+        if(s.db.rows("SELECT id FROM money_income_records WHERE fund_class_id=? AND date=?",fid,day).isEmpty()) return new int[]{0,1,0,0};
+        int processed=0,waiting=0,failed=0;
         for(var group:groups) {
-            if(s.db.scalar("SELECT COUNT(*) FROM money_income_snapshots WHERE trading_account_id=? AND fund_class_id=? AND source_card_id=? AND date<? AND status='PENDING'",group.get("tradingAccountId"),fid,group.get("sourceCardId"),day).signum()>0) { waiting++;continue; }
-            var old=s.db.rows("SELECT * FROM money_income_snapshots WHERE date=? AND trading_account_id=? AND fund_class_id=? AND source_card_id=? FOR UPDATE",day,group.get("tradingAccountId"),fid,group.get("sourceCardId"));
-            Map<String,Object> snapshot;
-            if(old.isEmpty()) {
-                BigDecimal qualified=decimal(group.get("eligibleShares"));
-                long sid=s.db.insert("INSERT INTO money_income_snapshots(date,user_id,trading_account_id,fund_class_id,source_card_id,fund_account_id,shares,income) VALUES(?,?,?,?,?,?,?,?)",day,group.get("userId"),group.get("tradingAccountId"),fid,group.get("sourceCardId"),group.get("fundAccountId"),qualified,AdvancedAmounts.moneyShares(qualified,rate));
-                snapshot=s.db.one("SELECT * FROM money_income_snapshots WHERE id=?",sid);
-            } else snapshot=old.getFirst();
-            if("COMPLETED".equals(snapshot.get("status"))) continue;
-            if(apply(snapshot,day)) processed++; else waiting++;
+            try{var result=s.tx(()->processGroup(fid,day,group));processed+=result[0];waiting+=result[1];}
+            catch(RuntimeException ex){failed++;details.add(fid+"/"+day+"/账户"+group.get("tradingAccountId")+"："+ex.getMessage());}
         }
-        s.db.update("UPDATE money_income_records SET used=TRUE WHERE id=?",rates.getFirst().get("id"));
-        return new int[]{processed,waiting,1};
+        return new int[]{processed,waiting,failed==0?1:0,failed};
+    }
+    private int[] processGroup(long fid,LocalDate day,Map<String,Object> candidate){
+        s.accounts.lockAccount(id(candidate,"userId"),id(candidate,"tradingAccountId"));
+        s.db.one("SELECT id FROM fund_classes WHERE id=? FOR UPDATE",fid);
+        var current=eligible(fid,day,id(candidate,"tradingAccountId"),id(candidate,"sourceCardId"));if(current.isEmpty())return new int[]{0,0};var group=current.getFirst();
+        var rates=s.db.rows("SELECT * FROM money_income_records WHERE fund_class_id=? AND date=? FOR UPDATE",fid,day);if(rates.isEmpty())return new int[]{0,1};BigDecimal rate=decimal(rates.getFirst().get("incomePerTenThousand"));
+        if(s.db.scalar("SELECT COUNT(*) FROM money_income_snapshots WHERE trading_account_id=? AND fund_class_id=? AND source_card_id=? AND date<? AND status='PENDING'",group.get("tradingAccountId"),fid,group.get("sourceCardId"),day).signum()>0)return new int[]{0,1};
+        var old=s.db.rows("SELECT * FROM money_income_snapshots WHERE date=? AND trading_account_id=? AND fund_class_id=? AND source_card_id=? FOR UPDATE",day,group.get("tradingAccountId"),fid,group.get("sourceCardId"));Map<String,Object> snapshot;
+        if(old.isEmpty()){
+            BigDecimal qualified=decimal(group.get("eligibleShares"));long sid=s.db.insert("INSERT INTO money_income_snapshots(date,user_id,trading_account_id,fund_class_id,source_card_id,fund_account_id,shares,income) VALUES(?,?,?,?,?,?,?,?)",day,group.get("userId"),group.get("tradingAccountId"),fid,group.get("sourceCardId"),group.get("fundAccountId"),qualified,AdvancedAmounts.moneyShares(qualified,rate));snapshot=s.db.one("SELECT * FROM money_income_snapshots WHERE id=?",sid);
+            s.db.insert("INSERT INTO extension_replay_inputs(source_type,source_id,trading_account_id,phase,effective_date,applied_at,operation_sequence,payload) SELECT 'MONEY_INCOME',?,?,'SNAPSHOT',?,?,COALESCE(MAX(id),0)+1,JSON_OBJECT('rate',?,'date',?) FROM share_entries",sid,snapshot.get("tradingAccountId"),day,s.now(),rate,day);
+        }else snapshot=old.getFirst();
+        if("COMPLETED".equals(snapshot.get("status")))return new int[]{0,0};s.db.update("UPDATE money_income_records SET used=TRUE WHERE id=?",rates.getFirst().get("id"));
+        if(!apply(snapshot,day))return new int[]{0,1};
+        s.db.insert("INSERT INTO extension_replay_inputs(source_type,source_id,trading_account_id,phase,effective_date,applied_at,operation_sequence,payload) SELECT 'MONEY_INCOME',?,?,'APPLY',?,?,COALESCE(MIN(CASE WHEN source_type='MONEY_INCOME' AND source_id=? THEN id END),MAX(id)+1,1),JSON_OBJECT('rate',?,'date',?) FROM share_entries",snapshot.get("id"),snapshot.get("tradingAccountId"),day,s.now(),snapshot.get("id").toString(),rate,day);
+        return new int[]{1,0};
     }
 
     // Positive entries use their acquired date; confirmed removals stop eligibility the next day.
     List<Map<String,Object>> eligible(long fid,LocalDate day) {
+        return eligible(fid,day,0,0);
+    }
+    private List<Map<String,Object>> eligible(long fid,LocalDate day,long aid,long cid) {
         return s.db.rows("""
             SELECT l.user_id,l.trading_account_id,l.source_card_id,l.fund_account_id,SUM(e.shares_delta) eligible_shares
             FROM position_lots l JOIN share_entries e ON e.lot_id=l.id
@@ -90,8 +97,8 @@ public class MoneyIncomeService {
             LEFT JOIN conversions c ON e.source_type='CONVERSION' AND c.id=CAST(e.source_id AS UNSIGNED)
             LEFT JOIN liquidation_events q ON e.source_type='LIQUIDATION' AND q.id=CAST(e.source_id AS UNSIGNED)
             LEFT JOIN money_income_snapshots m ON e.source_type='MONEY_INCOME' AND m.id=CAST(e.source_id AS UNSIGNED)
-            WHERE l.fund_class_id=? AND e.shares_delta!=0 AND
-              CASE WHEN e.shares_delta>0 THEN l.acquired_date
+            WHERE l.fund_class_id=? AND (?=0 OR l.trading_account_id=?) AND (?=0 OR l.source_card_id=?) AND e.shares_delta!=0 AND
+              CASE WHEN e.effective_date IS NOT NULL THEN e.effective_date WHEN e.shares_delta>0 THEN l.acquired_date
                 WHEN e.source_type='REDEMPTION' THEN COALESCE(o.confirmation_date,DATE(e.created_at))
                 WHEN e.source_type='CONVERSION' THEN COALESCE(c.confirmation_date,DATE(e.created_at))
                 WHEN e.source_type='LIQUIDATION' THEN COALESCE(q.date,DATE(e.created_at))
@@ -99,7 +106,7 @@ public class MoneyIncomeService {
                 ELSE DATE(e.created_at) END < ?
             GROUP BY l.user_id,l.trading_account_id,l.source_card_id,l.fund_account_id HAVING SUM(e.shares_delta)>0
             ORDER BY l.trading_account_id,l.source_card_id
-            """,fid,day);
+            """,fid,aid,aid,cid,cid,day);
     }
 
     private boolean apply(Map<String,Object> row,LocalDate day) {
@@ -133,13 +140,16 @@ public class MoneyIncomeService {
                 BigDecimal take=left.min(decimal(lot.get("shares")).subtract(decimal(lot.get("frozenShares"))));
                 if(take.signum()==0) continue;
                 s.db.update("UPDATE position_lots SET frozen_shares=frozen_shares+? WHERE id=?",take,lot.get("id"));
+                s.trades.shareEntry(uid,tid,fid,id(lot,"id"),"MONEY_INCOME",Long.toString(sid),"RESERVE",BigDecimal.ZERO,take,BigDecimal.ZERO);
                 var allocation=new LinkedHashMap<String,Object>();allocation.put("lotId",lot.get("id"));allocation.put("shares",take);allocation.put("cost",BigDecimal.ZERO);allocations.add(allocation);left=left.subtract(take);
             }
             s.trades.consumeLots(allocations,"MONEY_INCOME",Long.toString(sid));
+            s.db.update("UPDATE share_entries SET effective_date=? WHERE source_type='MONEY_INCOME' AND source_id=?",day,Long.toString(sid));
             units=consume.negate();
             if(cash.signum()<0) {
                 s.db.update("UPDATE wallets SET available=available+? WHERE trading_account_id=?",cash,tid);
                 s.accounts.cash(uid,tid,"MONEY_INCOME",Long.toString(sid),"LOSS_DEBIT",cash,BigDecimal.ZERO);
+                s.db.update("UPDATE cash_entries SET effective_date=? WHERE source_type='MONEY_INCOME' AND source_id=? AND event_type='LOSS_DEBIT'",day,Long.toString(sid));
             }
         }
         BigDecimal tail=combined.subtract(units).subtract(cash).setScale(12,RoundingMode.HALF_UP);
@@ -159,6 +169,7 @@ public class MoneyIncomeService {
         else if(cash.signum()<0) {
             s.db.update("UPDATE wallets SET available=available+? WHERE trading_account_id=?",cash,tid);
             s.accounts.cash(uid,tid,"MONEY_EXIT_INCOME",Long.toString(sid),"LOSS_DEBIT",cash,BigDecimal.ZERO);
+            s.db.update("UPDATE cash_entries SET effective_date=? WHERE source_type='MONEY_EXIT_INCOME' AND source_id=? AND event_type='LOSS_DEBIT'",day,Long.toString(sid));
         }
         BigDecimal original=combined.subtract(cash).setScale(12,RoundingMode.HALF_UP);
         String reason="来源份额已全部赎回，末期收益按两位HALF_UP转原账户现金，十二位尾差作为退出舍入处置保留";
@@ -181,7 +192,7 @@ public class MoneyIncomeService {
 
     public boolean hasUnsettledForAccount(long tradingAccountId) {
         if(s.db.scalar("SELECT COUNT(*) FROM money_income_snapshots WHERE trading_account_id=? AND status='PENDING'",tradingAccountId).signum()>0) return true;
-        if(s.db.scalar("SELECT COUNT(*) FROM payouts WHERE trading_account_id=? AND source_type IN ('MONEY_EXIT_INCOME','MONEY_TAIL') AND status!='PAID'",tradingAccountId).signum()>0) return true;
+        if(s.db.scalar("SELECT COUNT(*) FROM payouts WHERE trading_account_id=? AND source_type IN ('MONEY_EXIT_INCOME','MONEY_TAIL') AND status IN('PENDING','BLOCKED')",tradingAccountId).signum()>0) return true;
         LocalDate today=s.now().toLocalDate();
         for(var fund:s.db.rows("SELECT f.id,MIN(l.acquired_date) first_date FROM fund_classes f JOIN position_lots l ON l.fund_class_id=f.id WHERE l.trading_account_id=? AND f.type='MONEY' AND f.state!='LIQUIDATED' GROUP BY f.id",tradingAccountId)) {
             long fid=id(fund,"id");

@@ -57,7 +57,8 @@ class SipService {
     Map<String,Object> run(LocalDate date) {
         int done=0,failed=0,waiting=0;
         var details=new java.util.ArrayList<String>();
-        for(var plan:s.db.rows("SELECT * FROM sip_plans WHERE status='ACTIVE' ORDER BY id")) {
+        long cursor=0;while(true){var page=s.db.rows("SELECT * FROM sip_plans WHERE status='ACTIVE' AND id>? ORDER BY id LIMIT 200",cursor);if(page.isEmpty())break;
+        for(var plan:page) {cursor=id(plan,"id");
                 LocalDate period=latestPeriod(plan,date);
                 if(period==null) continue;
                 long pid=id(plan,"id");LocalDate actualDay=s.now().toLocalDate();
@@ -65,6 +66,7 @@ class SipService {
                 if(!s.due(s.openDate(period),10)) { waiting++;details.add("定投计划"+pid+"：尚未到执行日10:00");continue; }
                 if(s.db.scalar("SELECT COUNT(*) FROM sip_runs r JOIN orders o ON o.id=r.order_id WHERE r.plan_id=? AND o.status='SUBMITTED'",pid).signum()>0) { waiting++;details.add("定投计划"+pid+"：前一期申购仍待确认");continue; }
                 try {
+                    s.trades.prepareApplicationDay(id(plan,"fundClassId"));
                     boolean created=s.tx(()-> {
                         var locked=s.db.one("SELECT * FROM sip_plans WHERE id=? FOR UPDATE",pid);
                         if(!"ACTIVE".equals(locked.get("status")) || !s.db.rows("SELECT id FROM sip_runs WHERE plan_id=? AND scheduled_date=?",pid,period).isEmpty()) return false;
@@ -83,7 +85,7 @@ class SipService {
                         if(count>0) s.accounts.notifyUser(id(plan,"userId"),"SIP_FAILED",pid+"-"+period,"定投当期未扣款",String.valueOf(ex.getMessage()));return count;
                     });failed+=inserted;if(inserted>0)details.add("定投计划"+pid+"："+ex.getMessage());
                 }
-        }
+        }}
         return Map.of("processed",done,"waiting",waiting,"failed",failed,"details",details);
     }
     private LocalDate latestPeriod(Map<String,Object> plan,LocalDate through) {

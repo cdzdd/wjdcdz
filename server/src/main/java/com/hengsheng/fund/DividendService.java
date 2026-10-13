@@ -51,6 +51,10 @@ class DividendService {
         if(s.db.scalar("SELECT COUNT(*) FROM orders WHERE fund_class_id=? AND type!='OFFERING' AND status='SUBMITTED' AND confirmation_date<=?",event.get("fundClassId"),record).signum()>0)
             throw new IllegalArgumentException("登记日前应确认订单尚未完成，请先处理交易");
         var lots=eligibleLots(id(event,"fundClassId"),record);
+        for(long aid:lots.stream().map(l->id(l,"tradingAccountId")).distinct().sorted().toList()){
+            var owner=lots.stream().filter(l->id(l,"tradingAccountId")==aid).findFirst().orElseThrow();s.accounts.lockAccount(id(owner,"userId"),aid);
+        }
+        lots=eligibleLots(id(event,"fundClassId"),record);
         for(var lot:lots) {
             BigDecimal shares=decimal(lot.get("eligibleShares"));
             BigDecimal value=AdvancedAmounts.dividend(shares,decimal(event.get("perShare")));
@@ -61,6 +65,8 @@ class DividendService {
             s.db.update("INSERT INTO dividend_lot_entitlements(entitlement_id,lot_id,shares,amount) VALUES(?,?,?,?)",eid,lot.get("lotId"),shares,value);
             s.db.update("UPDATE dividend_entitlements SET shares=shares+?,amount=amount+? WHERE id=?",shares,value,eid);
         }
+        for(var right:s.db.rows("SELECT * FROM dividend_entitlements WHERE event_id=?",eventId))
+            s.db.insert("INSERT INTO extension_replay_inputs(source_type,source_id,trading_account_id,phase,effective_date,applied_at,operation_sequence,payload) SELECT 'DIVIDEND',?,?,'REGISTER',?,?,COALESCE(MAX(id),0)+1,JSON_OBJECT('recordDate',?,'exDate',?,'paymentDate',?,'perShare',?,'mode',?,'fundClassId',?) FROM share_entries",right.get("id"),right.get("tradingAccountId"),record,s.now(),record,event.get("exDate"),event.get("paymentDate"),event.get("perShare"),right.get("mode"),event.get("fundClassId"));
         s.db.update("UPDATE dividend_events SET status='SNAPSHOTTED' WHERE id=?",eventId);
         s.changed("SNAPSHOT_DIVIDEND","DIVIDEND",eventId,"按交易账户和历史来源登记权益");
         return Map.of("processed",lots.size(),"waiting",0,"failed",0);
@@ -79,7 +85,7 @@ class DividendService {
             LEFT JOIN liquidation_events q ON e.source_type='LIQUIDATION' AND q.id=CAST(e.source_id AS UNSIGNED)
             LEFT JOIN money_income_snapshots m ON e.source_type='MONEY_INCOME' AND m.id=CAST(e.source_id AS UNSIGNED)
             WHERE l.fund_class_id=? AND e.shares_delta!=0 AND
-              CASE WHEN e.shares_delta>0 THEN l.acquired_date
+              CASE WHEN e.effective_date IS NOT NULL THEN e.effective_date WHEN e.shares_delta>0 THEN l.acquired_date
                 WHEN e.source_type='REDEMPTION' THEN COALESCE(o.confirmation_date,DATE(e.created_at))
                 WHEN e.source_type='CONVERSION' THEN COALESCE(c.confirmation_date,DATE(e.created_at))
                 WHEN e.source_type='LIQUIDATION' THEN COALESCE(q.date,DATE(e.created_at))
@@ -92,7 +98,8 @@ class DividendService {
         var event=s.db.one("SELECT * FROM dividend_events WHERE id=?",eventId);
         if("DRAFT".equals(event.get("status"))) throw new IllegalArgumentException("请先登记权益快照");
         int done=0,wait=0,failed=0;var details=new java.util.ArrayList<String>();var waitingIds=new java.util.ArrayList<Long>();
-        for(var row:s.db.rows("SELECT id FROM dividend_entitlements WHERE event_id=? AND status='PENDING' ORDER BY id",eventId)) {
+        long cursor=0;while(true){var page=s.db.rows("SELECT id FROM dividend_entitlements WHERE event_id=? AND status='PENDING' AND id>? ORDER BY id LIMIT 200",eventId,cursor);if(page.isEmpty())break;
+        for(var row:page) {cursor=id(row,"id");
             try {
                 if(s.tx(()->executeOne(id(row,"id"),event))) done++;
                 else if("PENDING".equals(s.db.one("SELECT status FROM dividend_entitlements WHERE id=?",row.get("id")).get("status"))) {
@@ -100,11 +107,13 @@ class DividendService {
                 }
             }
             catch(RuntimeException ex) { failed++;details.add("分红权益"+row.get("id")+"："+ex.getMessage()); }
-        }
+        }}
         if(wait==0 && failed==0) s.db.update("UPDATE dividend_events SET status='COMPLETED' WHERE id=?",eventId);
         return Map.of("processed",done,"waiting",wait,"failed",failed,"details",details,"waitingIds",waitingIds);
     }
     private boolean executeOne(long eid,Map<String,Object> event) {
+        var owner=s.db.one("SELECT user_id,trading_account_id FROM dividend_entitlements WHERE id=?",eid);
+        s.accounts.lockAccount(id(owner,"userId"),id(owner,"tradingAccountId"));
         var right=s.db.one("SELECT * FROM dividend_entitlements WHERE id=? FOR UPDATE",eid);
         if(!"PENDING".equals(right.get("status"))) return false;
         LocalDate ex=date(event.get("exDate"));
@@ -117,7 +126,7 @@ class DividendService {
                 BigDecimal eligible=decimal(item.get("shares")),remaining=decimal(lot.get("shares"));
                 BigDecimal reduction=eligible.signum()==0?BigDecimal.ZERO:money(decimal(item.get("amount")).multiply(remaining.min(eligible)).divide(eligible,12,RoundingMode.HALF_UP));
                 s.db.update("UPDATE position_lots SET cost=cost-? WHERE id=?",reduction,item.get("lotId"));
-                s.db.update("INSERT INTO share_entries(user_id,trading_account_id,fund_class_id,lot_id,source_type,source_id,event_type,shares_delta,frozen_delta,cost_delta,created_at) VALUES(?,?,?,?,'DIVIDEND',?,'COST_ADJUST',0,0,?,?)",right.get("userId"),right.get("tradingAccountId"),event.get("fundClassId"),item.get("lotId"),Long.toString(eid),reduction.negate(),s.now());
+                s.db.update("INSERT INTO share_entries(user_id,trading_account_id,fund_class_id,lot_id,source_type,source_id,event_type,shares_delta,frozen_delta,cost_delta,created_at,effective_date) VALUES(?,?,?,?,'DIVIDEND',?,'COST_ADJUST',0,0,?,?,?)",right.get("userId"),right.get("tradingAccountId"),event.get("fundClassId"),item.get("lotId"),Long.toString(eid),reduction.negate(),s.now(),ex);
             }
             s.db.update("UPDATE dividend_entitlements SET cost_adjusted=TRUE WHERE id=?",eid);
         }
@@ -132,7 +141,7 @@ class DividendService {
         }
         BigDecimal nav=decimal(navRows.getFirst().get("nav"));
         BigDecimal shares=value.divide(nav,4,RoundingMode.HALF_UP);
-        s.trades.addLot(id(right,"userId"),id(right,"tradingAccountId"),id(event,"fundClassId"),id(right,"sourceCardId"),id(right,"fundAccountId"),shares,value,s.now().toLocalDate(),"DIVIDEND",Long.toString(eid));
+        s.trades.addLot(id(right,"userId"),id(right,"tradingAccountId"),id(event,"fundClassId"),id(right,"sourceCardId"),id(right,"fundAccountId"),shares,value,ex,"DIVIDEND",Long.toString(eid));
         s.db.update("UPDATE dividend_entitlements SET status='COMPLETED' WHERE id=?",eid);
         s.db.update("UPDATE nav_records SET used=TRUE WHERE fund_class_id=? AND date=?",event.get("fundClassId"),ex);
         s.accounts.notifyUser(id(right,"userId"),"DIVIDEND",Long.toString(eid),"分红已登记","红利再投资份额已进入原交易账户");return true;

@@ -20,6 +20,12 @@ public class AccountService {
     public AccountService(Db db,PasswordEncoder passwords,@Value("${fund.demo:false}") boolean demo,ObjectProvider<MoneyIncomeService> moneyIncome,ObjectProvider<DividendService> dividends) {this.db=db;this.passwords=passwords;this.demo=demo;this.moneyIncome=moneyIncome;this.dividends=dividends;}
     public boolean isDemo() { return demo; }
     public long userId() {
+        Long batchActor=ClearingExecutionContext.actorId();
+        if(ClearingExecutionContext.batch() && batchActor!=null) {
+            var actor=db.one("SELECT id,enabled FROM users WHERE id=?",batchActor);
+            if(!Db.yes(actor.get("enabled")))throw new ApiException(403,"USER_DISABLED","任务发起人已停用");
+            return batchActor;
+        }
         var auth=SecurityContextHolder.getContext().getAuthentication();
         if(auth==null||!auth.isAuthenticated()||"anonymousUser".equals(auth.getPrincipal()))throw new ApiException(401,"UNAUTHENTICATED","请先登录");
         var user=db.one("SELECT id,enabled FROM users WHERE username=?",auth.getName());
@@ -27,15 +33,17 @@ public class AccountService {
         return Db.id(user.get("id"));
     }
     public void requireRole(String role) {
+        if(ClearingExecutionContext.batch() && ClearingExecutionContext.actorId()==null)return;
         var user=db.one("SELECT role FROM users WHERE id=?",userId());String current=user.get("role").toString();
         if(!current.equals(role)&&!("OPERATOR".equals(role)&&"ADMIN".equals(current)))throw new ApiException(403,"FORBIDDEN","权限不足");
     }
     public LocalDateTime clock() {
+        if(ClearingExecutionContext.businessTime()!=null)return ClearingExecutionContext.businessTime();
         if(demo) {var r=db.rows("SELECT value FROM app_settings WHERE name='demo_clock'");if(!r.isEmpty())return LocalDateTime.parse(r.getFirst().get("value").toString());}
         return LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
     }
     public void audit(String action,String objectType,long objectId,String reason) {
-        Long actor=null;var a=SecurityContextHolder.getContext().getAuthentication();
+        Long actor=ClearingExecutionContext.actorId();var a=SecurityContextHolder.getContext().getAuthentication();
         if(a!=null&&a.isAuthenticated()&&!"anonymousUser".equals(a.getPrincipal())){var r=db.rows("SELECT id FROM users WHERE username=?",a.getName());if(!r.isEmpty())actor=Db.id(r.getFirst().get("id"));}
         db.insert("INSERT INTO audit_events(actor_id,action,object_type,object_id,reason,created_at) VALUES(?,?,?,?,?,?)",actor,action,objectType,objectId,reason==null?"":reason,clock());
     }
@@ -104,7 +112,7 @@ public class AccountService {
         long uid=userId();var c=card(uid,cid);long tid=Db.id(c.get("tradingAccountId"));var a=lockAccount(uid,tid);
         if(!"ACTIVE".equals(a.get("status")))throw ApiException.conflict("交易账户已关闭");
         if(Db.yes(a.get("debitFrozen"))||db.scalar("SELECT COUNT(*) FROM card_change_requests WHERE trading_account_id=? AND status='PENDING'",tid).signum()>0)throw ApiException.conflict("账户存在待处理换卡或扣款冻结，不能解绑");
-        if(Db.decimal(a.get("available")).signum()!=0||Db.decimal(a.get("frozen")).signum()!=0||db.scalar("SELECT COALESCE(SUM(shares),0) FROM position_lots WHERE trading_account_id=?",tid).signum()!=0||db.scalar("SELECT COUNT(*) FROM orders WHERE trading_account_id=? AND status IN('SUBMITTED','CONFIRMED')",tid).signum()>0||db.scalar("SELECT COUNT(*) FROM payouts WHERE trading_account_id=? AND status!='PAID'",tid).signum()>0)throw ApiException.conflict("账户仍有资产或未完成业务，不能解绑");
+        if(Db.decimal(a.get("available")).signum()!=0||Db.decimal(a.get("frozen")).signum()!=0||db.scalar("SELECT COALESCE(SUM(shares),0) FROM position_lots WHERE trading_account_id=?",tid).signum()!=0||db.scalar("SELECT COUNT(*) FROM orders WHERE trading_account_id=? AND status IN('SUBMITTED','CONFIRMED')",tid).signum()>0||db.scalar("SELECT COUNT(*) FROM payouts WHERE trading_account_id=? AND status IN('PENDING','BLOCKED')",tid).signum()>0)throw ApiException.conflict("账户仍有资产或未完成业务，不能解绑");
         String[][] blockers={{"sip_plans","status IN('ACTIVE','PAUSED')"},{"conversions","status='SUBMITTED'"},{"offering_orders","status IN('SUBMITTED','REFUND_PENDING')"},{"dividend_entitlements","status='PENDING'"},{"money_income_snapshots","(status='PENDING' OR (tail<>0 AND date=(SELECT MAX(m2.date) FROM money_income_snapshots m2 WHERE m2.trading_account_id=money_income_snapshots.trading_account_id AND m2.fund_class_id=money_income_snapshots.fund_class_id AND m2.source_card_id=money_income_snapshots.source_card_id)))"}};
         for(String[] b:blockers)if(db.scalar("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?",b[0]).signum()>0&&db.scalar("SELECT COUNT(*) FROM "+b[0]+" WHERE trading_account_id=? AND "+b[1],tid).signum()>0)throw ApiException.conflict("账户仍有定投、分红、转换或收益尾差，不能解绑");
         var incomes=moneyIncome.getIfAvailable();

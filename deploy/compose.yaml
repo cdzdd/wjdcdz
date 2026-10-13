@@ -35,7 +35,11 @@ services:
       SERVER_ADDRESS: 0.0.0.0
       SERVER_PORT: 8080
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      FUND_EXPORTS_DIRECTORY: /data/ta-exports
+      JAVA_TOOL_OPTIONS: -Xms256m -Xmx512m -XX:+UnlockExperimentalVMOptions -XX:G1MaxNewSizePercent=10
       TZ: Asia/Shanghai
+    volumes:
+      - application_exports:/data/ta-exports
   web:
     build:
       context: ../web
@@ -50,3 +54,4 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
 volumes:
   mysql_data:
+  application_exports:

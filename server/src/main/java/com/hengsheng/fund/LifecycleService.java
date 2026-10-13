@@ -89,7 +89,7 @@ class LifecycleService {
                 || s.db.scalar("SELECT COUNT(*) FROM position_lots WHERE fund_class_id=? AND frozen_shares>0",fid).signum()>0)
             throw ApiException.conflict("请先处置未确认交易与冻结份额");
         if(s.db.scalar("""
-            SELECT COUNT(*) FROM payouts p WHERE p.status!='PAID' AND
+            SELECT COUNT(*) FROM payouts p WHERE p.status IN('PENDING','BLOCKED') AND
             ((p.source_type IN ('REDEMPTION','OFFERING_REFUND') AND EXISTS
                 (SELECT 1 FROM orders o WHERE o.id=CAST(p.source_id AS UNSIGNED) AND o.fund_class_id=?))
               OR (p.source_type='DIVIDEND' AND EXISTS

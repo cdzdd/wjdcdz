@@ -3,6 +3,8 @@ spring:
     name: fund-simulation
   profiles:
     default: local
+  # Both bounded pools use this database: realtime 8, clearing 2 connections.
+  # Clearing admission is persisted (4 waiting tasks, 1 worker).
   datasource:
     url: ${DB_URL:jdbc:mysql://127.0.0.1:13306/fund_sim?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${DB_USER:fund_app}
@@ -30,6 +32,8 @@ management:
         include: health
 fund:
   demo: false
+  exports:
+    directory: ${FUND_EXPORTS_DIRECTORY:.runtime/ta-exports}
 ---
 spring:
   config:

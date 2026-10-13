@@ -27,8 +27,13 @@ if (-not (Get-OwnedProcess 'mysql-process' "--defaults-file=$mysqlIni")) {
 }
 $dbReady = $false
 for ($attempt = 0; $attempt -lt 30; $attempt++) {
-    & $mysql "--defaults-file=$runtime\mysql-app.cnf" --execute='SELECT 1' *> $null
-    if ($LASTEXITCODE -eq 0) { $dbReady = $true; break }
+    $dbErrorPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $mysql "--defaults-file=$runtime\mysql-app.cnf" --execute='SELECT 1' *> $null
+        $dbConnected = $LASTEXITCODE -eq 0
+    } finally { $ErrorActionPreference = $dbErrorPreference }
+    if ($dbConnected) { $dbReady = $true; break }
     Start-Sleep -Seconds 1
 }
 if (-not $dbReady) { throw 'Local database failed its authentication check. Read .runtime/logs/mysql-error.log.' }
@@ -60,7 +65,8 @@ if (-not $backend) {
     $env:SPRING_DATASOURCE_PASSWORD = $config.password
     $env:DB_URL = $config.jdbcUrl; $env:DB_USER = $config.user; $env:DB_PASSWORD = $config.password
     $env:SERVER_ADDRESS = '127.0.0.1'; $env:SERVER_PORT = '8080'
-    $backend = Start-Process $java -ArgumentList @('-jar',"`"$($jar.FullName)`"") -WorkingDirectory $server -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logs 'backend-stdout.log') -RedirectStandardError (Join-Path $logs 'backend-stderr.log') -PassThru
+    $env:FUND_EXPORTS_DIRECTORY = Join-Path $runtime 'ta-exports'
+    $backend = Start-Process $java -ArgumentList @('-Xms256m','-Xmx512m','-XX:+UnlockExperimentalVMOptions','-XX:G1MaxNewSizePercent=10','-jar',"`"$($jar.FullName)`"") -WorkingDirectory $server -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logs 'backend-stdout.log') -RedirectStandardError (Join-Path $logs 'backend-stderr.log') -PassThru
     $backend.Id | Set-Content -LiteralPath (Join-Path $runtime 'backend.pid')
 }
 if (-not $vite) {

@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.*;
 @ActiveProfiles("test")
 @Transactional
 class OfferingSipRegressionTest {
+    @org.springframework.test.context.transaction.BeforeTransaction void prepareAdmissionDays(){for(String day:java.util.List.of("2026-10-14","2026-10-21","2026-10-26","2026-10-28"))db.update("INSERT IGNORE INTO application_days(business_date,state) VALUES(?,'OPEN')",day);}
     @Autowired Db db;
     @Autowired AccountService accounts;
     @Autowired OfferingService offerings;
@@ -29,7 +30,7 @@ class OfferingSipRegressionTest {
     long user,account,card,fund;
     String key;
     @BeforeEach void fixture() {
-        assertThat(db.scalar("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID=CONNECTION_ID() AND DB='fund_sim_test'")).isEqualByComparingTo("1");
+        assertThat(db.scalar("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID=CONNECTION_ID() AND DB IN('fund_sim_test','fund_sim_upgrade_test')")).isEqualByComparingTo("1");
         SecurityContextHolder.getContext().setAuthentication(new TestingAuthenticationToken("admin","", "ROLE_ADMIN"));
         clock("2026-10-14T10:00:00");key=UUID.randomUUID().toString().replace("-","").substring(0,20);
         user=db.insert("INSERT INTO users(username,password_hash,display_name,opened,risk_level,risk_expires_at) VALUES(?,'unused','认购定投测试',TRUE,5,'2027-10-14')","os"+key);

@@ -1,33 +1,64 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
+import { useRoute,useRouter } from 'vue-router'
 import { api } from '../../api'
-import { usePage,perform,busy } from '../../state'
-import { cell, jobOutcome, label, stateTone } from '../../domain'
+import { usePage,perform,busy,user } from '../../state'
+import { cell, jobOutcome, label, stateTone,requestKey } from '../../domain'
 import type { Row } from '../../domain'
 import PageHeader from '../../components/PageHeader.vue'
 import DataTable from '../../components/DataTable.vue'
 import LoadState from '../../components/LoadState.vue'
 const tab=ref('jobs'),jobs=ref<Row[]>([]),orders=ref<Row[]>([]),positions=ref<Row[]>([]),payouts=ref<Row[]>([]),plans=ref<Row[]>([]),date=ref(''),type=ref('ALL'),result=ref<Row|null>(null),detail=ref<Row|null>(null),detailOpen=ref(false),detailIsJob=ref(false),context=ref<Row|null>(null)
+const route=useRoute(),router=useRouter(),runs=ref<Row[]>([]),exports=ref<Row[]>([]),registrars=ref<Row[]>([]),registrarId=ref(''),revisionSetId=ref(String(route.query.revisionSetId||'')),preview=ref<Row|null>(null),previewError=ref(''),exportTask=ref<Row|null>(null)
+let timer:ReturnType<typeof setTimeout>|undefined,disposed=false,runGeneration=0
+onUnmounted(()=>{disposed=true;runGeneration++;clearTimeout(timer)})
 const countItems=[{key:'processed',label:'成功',tone:'success'},{key:'waiting',label:'等待',tone:'warning'},{key:'failed',label:'失败',tone:'danger'}]
 let dateInitialized=false
 const {loading,error,load}=usePage(async()=>{
   [jobs.value,orders.value,positions.value,payouts.value,plans.value,context.value]=await Promise.all([api.get('/admin/jobs'),api.get('/admin/orders'),api.get('/admin/positions'),api.get('/admin/payouts'),api.get('/sip-plans'),api.get('/admin/jobs/context')])
+  runs.value=await api.get('/admin/clearing-runs')
+  if(route.query.runId&&!result.value)await refreshRun(Number(route.query.runId))
   if(!dateInitialized){if(!date.value)date.value=context.value!.businessTime.slice(0,10);dateInitialized=true}
 })
-async function run(){
-  const requestedType=type.value,requestedDate=date.value
-  await perform(async()=>{result.value={...await api.post('/admin/jobs',{type:requestedType,date:requestedDate}),type:requestedType,date:requestedDate};return result.value},load)
+async function trackRun(runId:number){if(String(route.query.runId)===String(runId))await refreshRun(runId);else await router.replace({query:{...route.query,runId:String(runId)}})}
+async function refreshRun(runId:number){
+  clearTimeout(timer);const generation=++runGeneration
+  try {
+    const row=await api.get('/admin/clearing-runs/'+runId)
+    if(disposed||generation!==runGeneration)return
+    result.value={...row,...row.counts,details:row.result?.details||row.reason?[...(row.result?.details||[]),...(row.reason?[row.reason]:[])]:[],date:row.businessDate||row.date,actualRunAt:row.startedAt}
+    if(['QUEUED','RUNNING'].includes(row.state))timer=setTimeout(()=>refreshRun(runId),1500)
+  }catch(e){if(!disposed&&generation===runGeneration)error.value=e instanceof Error?e.message:'任务查询失败，请刷新重试'}
 }
+async function run(){await perform(async()=>{const submitted=await api.post('/admin/jobs',{type:type.value,date:date.value,requestKey:requestKey()});if(submitted.runId)await trackRun(submitted.runId);else result.value={...submitted,type:type.value,date:date.value}})}
+async function makePreview(){previewError.value='';preview.value=null;const requested=revisionSetId.value;await perform(async()=>{const row=await api.post('/admin/reclearing/previews',{revisionSetId:Number(requested)});if(revisionSetId.value===requested)preview.value=row})}
+async function moreChanges(){const current=preview.value!;await perform(async()=>{const next=await api.get('/admin/reclearing/previews/'+current.previewId+'/items?afterId='+current.nextCursor);if(preview.value?.previewId===current.previewId)preview.value={...current,changes:[...current.changes,...next.items],nextCursor:next.nextCursor,changesTotal:next.total}})}
+async function executePreview(){
+  await perform(async()=>{
+    try {const submitted=await api.post('/admin/reclearing/runs',{previewId:preview.value!.previewId,scopeVersion:preview.value!.scopeVersion,requestKey:requestKey()});await trackRun(submitted.runId)}
+    catch(e){previewError.value=e instanceof Error?e.message:'执行失败';preview.value=null;throw e}
+  })
+}
+async function loadExports(){[exports.value,registrars.value]=await Promise.all([api.get('/admin/application-exports'),api.get('/registrars')]);if(!registrarId.value)registrarId.value=String(registrars.value[0]?.id||'')}
+async function exportApplications(id?:number){await perform(async()=>{exportTask.value=await api.post(id?'/admin/application-exports/'+id+'/regenerate':'/admin/application-exports',id?{requestKey:requestKey()}:{date:date.value,registrarId:Number(registrarId.value),requestKey:requestKey()});await trackRun(exportTask.value!.runId)},loadExports)}
+watch(()=>route.query.runId,value=>{if(value)void refreshRun(Number(value));else {runGeneration++;clearTimeout(timer);result.value=null}})
+watch(revisionSetId,()=>{preview.value=null;previewError.value=''})
+watch(tab,value=>{if(value==='exports')void perform(loadExports)})
+if(route.query.revisionSetId&&user.value?.role==='ADMIN')tab.value='reclear'
 function inspect(row:Row,isJob=false){detail.value=row;detailIsJob.value=isJob;detailOpen.value=true}
 function taskLabel(value:unknown){return value==='MONEY'?'货币收益结转':label(value)}
 function outcomeTone(row:Row){return jobOutcome(row)==='NO_WORK'?'muted':stateTone(jobOutcome(row))}
 function reasons(row:Row):string[]{
+  if(['QUEUED','RUNNING'].includes(jobOutcome(row)))return ['任务已受理，后台正在处理；完成后自动更新结果。']
   const value=row.details
   const messages=(Array.isArray(value)?value:typeof value==='string'?value.split('\n'):value?[value]:[])
     .map(item=>typeof item==='object'?JSON.stringify(item):String(item)).filter(item=>item.trim())
   if(messages.length)return messages
   if(jobOutcome(row)==='NO_WORK')return ['所选业务日期和任务类型下，无待处理业务；已完成项目不会重复计数。']
   const fallback=[]
+  if(['REJECTED','REJECTED_QUEUE_FULL','INTERRUPTED'].includes(jobOutcome(row)))return ['任务未完成，请查看任务状态与失败原因后重新提交。']
+  if(row.state==='FAILED'&&!row.failed)return ['任务失败，请查看相关业务记录或运行原因后重试。']
+  if(row.state==='WAITING'&&!row.waiting)return ['任务正在等待业务条件，请查看运行原因后重新扫描。']
   if(row.failed>0)fallback.push('存在失败项，本批次未记录具体失败原因，请检查相关业务记录。')
   if(row.waiting>0)fallback.push('存在等待处理项，本批次未提供逐项原因，请在交易订单、待支付与路由或定投计划中查看对应记录。')
   return fallback.length?fallback:['本批次已完成，无等待或失败项。']
@@ -36,7 +67,15 @@ function reasons(row:Row):string[]{
 <template>
   <PageHeader title="交易与任务" subtitle="TA模拟确认、资金支付、定投与收益任务共用同一处理流程。"><button class="button" @click="load">刷新</button></PageHeader>
   <LoadState :loading="loading" :error="error" @retry="load"/>
-  <div class="tabs"><button v-for="t in [['jobs','任务中心'],['orders','交易订单'],['positions','持仓'],['payouts','待支付与路由'],['plans','定投计划']]" :key="t[0]" :class="{active:tab===t[0]}" @click="tab=t[0]">{{ t[1] }}</button></div>
+  <div class="tabs"><button v-for="t in [['jobs','任务中心'],['orders','交易订单'],['positions','持仓'],['payouts','待支付与路由'],['plans','定投计划'],['exports','申请文件'],...(user?.role==='ADMIN'?[['reclear','重新清算']]:[])]" :key="t[0]" :class="{active:tab===t[0]}" @click="tab=t[0]">{{ t[1] }}</button></div>
+  <section v-if="result" class="panel">
+      <div v-if="result" class="job-result" aria-live="polite">
+        <h3>本次执行：{{ label(jobOutcome(result)) }}</h3>
+        <p v-if="result.runId">任务 {{ result.runId }} · 进度 {{ result.progress?.percent ?? 0 }}%</p><DataTable v-if="result.nodes?.length" :rows="result.nodes" :columns="[{key:'name',label:'处理步骤'},{key:'state',label:'步骤状态',kind:'state'},{key:'reason',label:'处理原因'}]"/><div class="job-counts"><span v-for="item in countItems.filter(item=>result![item.key]>0)" :key="item.key" class="status" :class="item.tone">{{ item.label }} {{ result[item.key] }} 项</span><span v-if="jobOutcome(result)==='NO_WORK'" class="muted">本次无需处理</span></div>
+        <p class="muted">{{ taskLabel(result.type) }} · 业务日期 {{ result.date }} · 实际运行时间 {{ cell(result.actualRunAt,'date') }} · 业务时钟 {{ cell(result.businessTime,'date') }}</p>
+        <ul class="job-reasons"><li v-for="(reason,index) in reasons(result)" :key="index">{{ reason }}</li></ul>
+      </div>
+  </section>
   <template v-if="tab==='jobs'">
     <section class="panel">
       <h2>按业务日期执行任务</h2>
@@ -51,13 +90,9 @@ function reasons(row:Row):string[]{
         <button class="button primary" :disabled="busy>0||!date">{{ busy?'任务运行中…':'执行任务' }}</button>
       </form>
       <p v-if="type==='MONEY'||type==='ALL'" class="muted small" style="margin-top:14px">货币收益按所选业务日期的前一自然日结转。例如选择10月15日，会处理10月14日收益。</p>
-      <div v-if="result" class="job-result" aria-live="polite">
-        <h3>本次执行：{{ label(jobOutcome(result)) }}</h3>
-        <div class="job-counts"><span v-for="item in countItems.filter(item=>result![item.key]>0)" :key="item.key" class="status" :class="item.tone">{{ item.label }} {{ result[item.key] }} 项</span><span v-if="jobOutcome(result)==='NO_WORK'" class="muted">本次无需处理</span></div>
-        <p class="muted">{{ taskLabel(result.type) }} · 业务日期 {{ result.date }} · 实际运行时间 {{ cell(result.actualRunAt,'date') }} · 业务时钟 {{ cell(result.businessTime,'date') }}</p>
-        <ul class="job-reasons"><li v-for="(reason,index) in reasons(result)" :key="index">{{ reason }}</li></ul>
-      </div>
+
     </section>
+    <section class="panel"><h2>后台运行</h2><DataTable :rows="runs" :columns="[{key:'runId',label:'任务ID'},{key:'type',label:'类型'},{key:'businessDate',label:'业务日期'},{key:'state',label:'状态',kind:'state'},{key:'startedAt',label:'真实开始时间',kind:'date'},{key:'finishedAt',label:'真实结束时间',kind:'date'}]"><template #actions="{row}"><button class="text-button" @click="trackRun(row.runId||row.id)">查询进度</button></template></DataTable></section>
     <section class="panel">
       <h2>任务历史</h2>
       <p class="notice">以下计数是每次执行批次的处理项数，不是累计订单数；处理项可能是订单、付款、定投或收益等业务。自动任务每5分钟检查一次，无待处理业务的空批次属于正常情况。旧记录不会追溯重算。</p>
@@ -70,7 +105,24 @@ function reasons(row:Row):string[]{
       </DataTable>
     </section>
   </template>
-  <section v-else-if="tab==='orders'" class="panel"><DataTable :rows="orders" :columns="[{key:'orderNo',label:'订单'}, {key:'userId',label:'客户'}, {key:'fundName',label:'基金'}, {key:'type',label:'业务'}, {key:'tradingAccountId',label:'来源账户'}, {key:'sourceCardId',label:'历史来源卡'}, {key:'status',label:'状态',kind:'state'}, {key:'amount',label:'金额（元）',kind:'money'}, {key:'shares',label:'份额',kind:'shares'}, {key:'applicationDate',label:'交易日'}, {key:'reason',label:'原因'}]"><template #actions="{row}"><button class="text-button" @click="inspect(row)">详情</button></template></DataTable></section>
+  <section v-else-if="tab==='reclear'&&user?.role==='ADMIN'" class="panel">
+    <h2>净值修订影响预演</h2><p class="notice">先保存候选行情，再查看涉及账户与前后结果。存在不足或历史边界时保留原结果。</p>
+    <form class="inline-form" @submit.prevent="makePreview"><label><span>候选修订集合</span><input v-model="revisionSetId" required inputmode="numeric"/></label><button class="button primary" :disabled="busy>0||!revisionSetId">生成影响预演</button></form>
+    <p v-if="previewError" role="alert">{{ previewError }}；请重新生成影响预演。</p>
+    <template v-if="preview"><p>预演 {{ preview.previewId }} · {{ label(preview.state) }} · 影响账户 {{ Array.isArray(preview.affectedAccounts)?preview.affectedAccounts.length:preview.affectedAccounts }}</p>
+      <DataTable :rows="(preview.changes||[]).map((r:Row)=>({...r,oldShares:r.before?.shares,newShares:r.after?.shares,oldAmount:r.before?.amount,newAmount:r.after?.amount,marketDate:r.before?.applicationDate,oldTargetShares:r.before?.targetShares,newTargetShares:r.after?.targetShares,oldFee:r.before?.fee,newFee:r.after?.fee,oldNetAmount:r.before?.netAmount,newNetAmount:r.after?.netAmount}))" :columns="[{key:'sourceType',label:'业务'},{key:'sourceId',label:'申请'},{key:'tradingAccountId',label:'来源账户'},{key:'marketDate',label:'行情所属日'},{key:'effectiveDate',label:'资产有效日期'},{key:'oldShares',label:'原份额',kind:'shares'},{key:'newShares',label:'更正份额',kind:'shares'},{key:'oldAmount',label:'原金额',kind:'money'},{key:'newAmount',label:'更正金额',kind:'money'},{key:'oldTargetShares',label:'原转入份额',kind:'shares'},{key:'newTargetShares',label:'更正转入份额',kind:'shares'},{key:'oldFee',label:'原费用',kind:'money'},{key:'newFee',label:'更正费用',kind:'money'},{key:'oldNetAmount',label:'原净额',kind:'money'},{key:'newNetAmount',label:'更正净额',kind:'money'}]"/>
+      <p v-if="preview.changesTotal!=null" class="muted">已展示 {{ preview.changes?.length||0 }} / {{ preview.changesTotal }} 项差异</p><button v-if="preview.nextCursor!=null" class="button" :disabled="busy>0" @click="moreChanges">加载更多差异</button>
+      <DataTable v-if="preview.blockers?.length" :rows="preview.blockers" :columns="[{key:'sourceType',label:'业务'},{key:'sourceId',label:'申请'},{key:'tradingAccountId',label:'来源账户'},{key:'reason',label:'无法执行原因'},{key:'shortage',label:'不足量'}]"/>
+      <button class="button primary" :disabled="busy>0||preview.state!=='READY'||!!preview.blockers?.length" @click="executePreview">确认执行重新清算</button>
+    </template>
+  </section>
+  <section v-else-if="tab==='exports'" class="panel">
+    <h2>当日申请文件</h2><p class="notice">按申请归属日与登记机构生成截止快照。重导使用同一快照，完成后可下载。</p>
+    <form class="inline-form" @submit.prevent="exportApplications()"><label><span>文件业务日期</span><input v-model="date" type="date" required/></label><label><span>登记机构</span><select v-model="registrarId" required><option v-for="r in registrars" :key="r.id" :value="String(r.id)">{{ r.name }}</option></select></label><button class="button primary" :disabled="busy>0">生成申请文件</button><button class="button" type="button" @click="loadExports">刷新文件状态</button></form>
+    <p v-if="exportTask">已提交文件任务 {{ exportTask.runId }}</p>
+    <DataTable :rows="exports" :columns="[{key:'id',label:'文件ID'},{key:'businessDate',label:'申请归属日'},{key:'registrarId',label:'TA'},{key:'state',label:'生成状态',kind:'state'},{key:'rowCount',label:'申请行数'},{key:'snapshotVersion',label:'快照版本'},{key:'amountTotal',label:'申请金额合计',kind:'money'},{key:'sharesTotal',label:'申请份额合计',kind:'shares'},{key:'checksum',label:'校验和'},{key:'errorReason',label:'失败原因'},{key:'createdAt',label:'真实创建时间',kind:'date'}]"><template #actions="{row}"><a v-if="row.state==='COMPLETED'" :href="'/api/admin/application-exports/'+row.id+'/download'" download class="text-button">下载文件</a><button class="text-button" :disabled="busy>0||['QUEUED','RUNNING'].includes(row.state)" @click="exportApplications(row.id)">重导同一快照</button><button v-if="row.runId" class="text-button" @click="trackRun(row.runId)">查询进度</button></template></DataTable>
+  </section>
+  <section v-else-if="tab==='orders'" class="panel"><DataTable :rows="orders" :columns="[{key:'orderNo',label:'订单'}, {key:'applicationNo',label:'申请编号'}, {key:'confirmationNo',label:'当前确认编号'}, {key:'userId',label:'客户'}, {key:'fundName',label:'基金'}, {key:'type',label:'业务'}, {key:'tradingAccountId',label:'来源账户'}, {key:'sourceCardId',label:'历史来源卡'}, {key:'status',label:'状态',kind:'state'}, {key:'amount',label:'金额（元）',kind:'money'}, {key:'shares',label:'份额',kind:'shares'}, {key:'applicationDate',label:'交易日'}, {key:'reason',label:'原因'}]"><template #cell-applicationNo="{row}">{{ row.applicationNo||'历史申请编号未采集' }}</template><template #cell-confirmationNo="{row}">{{ row.confirmationNo||'历史确认编号未采集' }}</template><template #actions="{row}"><button class="text-button" @click="inspect(row)">详情</button></template></DataTable></section>
   <section v-else-if="tab==='positions'" class="panel"><DataTable :rows="positions" :columns="[{key:'userId',label:'客户'}, {key:'tradingAccountId',label:'交易账户'}, {key:'fundName',label:'基金'}, {key:'availableShares',label:'可用份额',kind:'shares'}, {key:'shares',label:'份额',kind:'shares'}, {key:'frozenShares',label:'冻结份额',kind:'shares'}, {key:'cost',label:'成本（元）',kind:'money'}, {key:'marketValue',label:'市值（元）',kind:'money'}]"><template #actions="{row}"><button class="text-button" @click="inspect(row)">持仓明细</button></template></DataTable></section>
   <section v-else-if="tab==='payouts'" class="panel"><p class="notice">历史来源卡与实际支付目标分别保留。受阻款项在客户资产中保持应收，不因换卡或持仓核销而消失。</p><DataTable :rows="payouts" :columns="[{key:'id',label:'付款ID'}, {key:'userId',label:'客户'}, {key:'tradingAccountId',label:'交易账户'}, {key:'sourceType',label:'来源业务'}, {key:'sourceCardId',label:'历史来源卡'}, {key:'targetCardId',label:'当前付款目标'}, {key:'amount',label:'金额（元）',kind:'money'}, {key:'dueDate',label:'计划支付日'}, {key:'status',label:'状态',kind:'state'}, {key:'reason',label:'阻塞原因'}]"><template #actions="{row}"><button class="text-button" @click="inspect(row)">支付路径</button></template></DataTable></section>
   <section v-else class="panel"><DataTable :rows="plans" :columns="[{key:'id',label:'计划'}, {key:'userId',label:'客户'}, {key:'fundName',label:'基金'}, {key:'tradingAccountId',label:'固定扣款账户'}, {key:'bankCardId',label:'扣款卡'}, {key:'bindingVersion',label:'版本'}, {key:'amount',label:'金额（元）',kind:'money'}, {key:'frequency',label:'频率'}, {key:'day',label:'日期'}, {key:'status',label:'状态',kind:'state'}]"/></section>

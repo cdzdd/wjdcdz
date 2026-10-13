@@ -32,7 +32,17 @@ class AdvancedIntegrationTest {
             return http.send(request.method(method,data==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(json.writeValueAsString(data))).build(),HttpResponse.BodyHandlers.ofString());
         }
         Map<String,Object> map(String method,String path,Object data) throws Exception {
-            var response=call(method,path,data);assertThat(response.statusCode()).as(path+" "+response.body()).isEqualTo(200);
+            var response=call(method,path,data);
+            if(response.statusCode()==202){
+                long id=Db.id(json.readValue(response.body(),Map.class).get("runId"));long deadline=System.nanoTime()+60_000_000_000L;
+                while(System.nanoTime()<deadline){
+                    var row=map("GET","/admin/clearing-runs/"+id,null);
+                    if(!Set.of("QUEUED","RUNNING").contains(row.get("state"))){assertThat(row.get("state")).as(row.toString()).isNotIn("FAILED","REJECTED_QUEUE_FULL");return (Map<String,Object>)row.get("result");}
+                    Thread.sleep(30);
+                }
+                throw new AssertionError("清算任务超时："+id);
+            }
+            assertThat(response.statusCode()).as(path+" "+response.body()).isEqualTo(200);
             return json.readValue(response.body(),Map.class);
         }
         List<Map<String,Object>> list(String path) throws Exception {
@@ -144,7 +154,9 @@ class AdvancedIntegrationTest {
         trades.addLot(uid,aid,fund,Long.parseLong(card.get("id").toString()),fa,new java.math.BigDecimal("100.0000"),new java.math.BigDecimal("120.00"),java.time.LocalDate.parse("2026-10-12"),"HISTORIC_CONFIRM","rights");
         admin.map("POST","/admin/dividends",Map.of("fundClassId",fund,"recordDate","2026-10-13","exDate","2026-10-14","paymentDate","2026-10-16","perShare","0.10"));
         time(admin,"2026-10-14T10:00:00");
-        trades.consumeLots(trades.reserveLots(uid,aid,fund,new java.math.BigDecimal("100.0000")),"SETTLED_REDEMPTION","fixture");
+        var allocations=trades.reserveLots(uid,aid,fund,new java.math.BigDecimal("100.0000"));
+        for(var lot:allocations)trades.shareEntry(uid,aid,fund,Db.id(lot.get("lotId")),"SETTLED_REDEMPTION","fixture","RESERVE",java.math.BigDecimal.ZERO,Db.decimal(lot.get("shares")),java.math.BigDecimal.ZERO);
+        trades.consumeLots(allocations,"SETTLED_REDEMPTION","fixture");
         user.map("POST","/trading-accounts/"+aid+"/withdrawals",Map.of("amount","100000.00","requestKey","empty"));
         assertThat(user.call("POST","/bank-cards/"+card.get("id")+"/unbind",Map.of()).statusCode()).isEqualTo(409);
     }

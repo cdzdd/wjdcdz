@@ -42,6 +42,12 @@ public class Db {
     public int update(String sql,Object...args) { return jdbc.update(sql,args); }
     public static BigDecimal decimal(Object value) { return value==null?BigDecimal.ZERO:new BigDecimal(value.toString()); }
     public static BigDecimal money(BigDecimal value) { return value.setScale(2,RoundingMode.HALF_UP); }
+    public static Object jsonDecimals(Object value){
+        if(value instanceof BigDecimal decimal)return decimal.toPlainString();
+        if(value instanceof Map<?,?> map){var result=new LinkedHashMap<String,Object>();map.forEach((key,item)->result.put(key.toString(),jsonDecimals(item)));return result;}
+        if(value instanceof List<?> list)return list.stream().map(Db::jsonDecimals).toList();
+        return value;
+    }
     public static long id(Object value) { if(value==null)throw ApiException.bad("缺少记录标识");return Long.parseLong(value.toString()); }
     public static boolean yes(Object v) { return Boolean.TRUE.equals(v)||"1".equals(String.valueOf(v))||"true".equalsIgnoreCase(String.valueOf(v)); }
     public static String text(Map<String,Object> m,String key) {Object v=m.get(key);if(v==null||v.toString().isBlank())throw ApiException.bad("缺少字段："+key);return v.toString();}

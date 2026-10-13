@@ -2,6 +2,9 @@ package com.hengsheng.fund;
 
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.UUID;
+import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import static com.hengsheng.fund.AdvancedSupport.*;
@@ -10,6 +13,7 @@ import static com.hengsheng.fund.AdvancedSupport.*;
 @RequestMapping("/api")
 class AdvancedController {
     private final AdvancedSupport s;
+    private final ClearingService clearing;
     private final OfferingService offerings;
     private final SipService sip;
     private final DividendService dividends;
@@ -18,22 +22,24 @@ class AdvancedController {
     private final LifecycleService lifecycle;
     private final CashCorrectionService corrections;
     AdvancedController(AdvancedSupport s,OfferingService offerings,SipService sip,DividendService dividends,
-            ConversionService conversions,MoneyIncomeService money,LifecycleService lifecycle,CashCorrectionService corrections) {
+            ConversionService conversions,MoneyIncomeService money,LifecycleService lifecycle,CashCorrectionService corrections,ClearingService clearing) {
+        this.clearing=clearing;
         this.s=s;this.offerings=offerings;this.sip=sip;this.dividends=dividends;
         this.conversions=conversions;this.money=money;this.lifecycle=lifecycle;
         this.corrections=corrections;
     }
+    private ResponseEntity<Map<String,Object>> enqueue(String type,long targetId,Map<String,Object> input){var parameters=new LinkedHashMap<>(input);parameters.put("targetId",targetId);var day=type.equals("LIQUIDATION")?date(input.get("date")):s.now().toLocalDate();long runId=clearing.submit(type,day,parameters,s.accounts.userId(),input.getOrDefault("requestKey",UUID.randomUUID().toString()).toString());return clearing.submissionResponse(runId,Map.of());}
     private boolean staff() { return !"INVESTOR".equals(s.accounts.me().get("role")); }
     private void operator() { s.accounts.requireRole("OPERATOR"); }
     @GetMapping("/offering-orders")
     List<Map<String,Object>> offerings() {
         long uid=s.accounts.userId();
-        return s.db.rows("SELECT o.*,f.name fund_name,c.bank_name,c.sim_number,p.interest FROM orders o JOIN fund_classes f ON f.id=o.fund_class_id JOIN bank_cards c ON c.id=o.source_card_id JOIN offering_orders p ON p.order_id=o.id WHERE o.type='OFFERING' AND o.user_id=? ORDER BY o.id DESC",uid);
+        return s.db.rows("SELECT o.*,f.name fund_name,c.bank_name,c.sim_number,p.interest,tc.confirmation_no FROM orders o JOIN fund_classes f ON f.id=o.fund_class_id JOIN bank_cards c ON c.id=o.source_card_id JOIN offering_orders p ON p.order_id=o.id LEFT JOIN trade_confirmations tc ON tc.id=o.current_confirmation_id WHERE o.type='OFFERING' AND o.user_id=? ORDER BY o.id DESC",uid);
     }
     @PostMapping("/offering-orders")
     Map<String,Object> subscribe(@RequestBody Map<String,Object> input) { return offerings.subscribe(s.accounts.userId(),input); }
     @PostMapping("/admin/offerings/{id}/finalize")
-    Map<String,Object> finalizeOffering(@PathVariable long id,@RequestBody Map<String,Object> input) { operator();return offerings.finalizeOffering(id,input); }
+    ResponseEntity<Map<String,Object>> finalizeOffering(@PathVariable long id,@RequestBody Map<String,Object> input) { operator();return enqueue("OFFERING_FINALIZE",id,input); }
 
     @GetMapping({"/sip-plans","/admin/sip-plans"})
     List<Map<String,Object>> plans() {
@@ -55,16 +61,16 @@ class AdvancedController {
     Map<String,Object> preference(@PathVariable long id,@RequestBody Map<String,Object> input) { return dividends.preference(s.accounts.userId(),id,text(input,"mode")); }
     @GetMapping("/dividends")
     List<Map<String,Object>> dividends() {
-        return s.db.rows("SELECT d.*,d.shares eligible_shares,(SELECT COALESCE(SUM(l.shares_delta),0) FROM share_entries l WHERE l.source_type='DIVIDEND' AND l.source_id=CAST(d.id AS CHAR) AND l.trading_account_id=d.trading_account_id AND l.event_type='ADD') reinvest_shares,e.fund_class_id,e.record_date,e.ex_date,e.payment_date,e.per_share,f.name fund_name,c.bank_name,c.sim_number FROM dividend_entitlements d JOIN dividend_events e ON e.id=d.event_id JOIN fund_classes f ON f.id=e.fund_class_id JOIN bank_cards c ON c.id=d.source_card_id WHERE d.user_id=? ORDER BY d.id DESC",s.accounts.userId());
+        return s.db.rows("SELECT d.*,d.shares eligible_shares,(SELECT COALESCE(SUM(l.shares_delta),0) FROM share_entries l WHERE l.source_type='DIVIDEND' AND l.source_id=CAST(d.id AS CHAR) AND l.trading_account_id=d.trading_account_id AND l.event_type='ADD' AND l.effect_state='ACTIVE' AND l.reversal_of IS NULL) reinvest_shares,e.fund_class_id,e.record_date,e.ex_date,e.payment_date,e.per_share,f.name fund_name,c.bank_name,c.sim_number FROM dividend_entitlements d JOIN dividend_events e ON e.id=d.event_id JOIN fund_classes f ON f.id=e.fund_class_id JOIN bank_cards c ON c.id=d.source_card_id WHERE d.user_id=? ORDER BY d.id DESC",s.accounts.userId());
     }
     @GetMapping("/admin/dividends")
     List<Map<String,Object>> adminDividends() { operator();return s.db.rows("SELECT e.*,f.name fund_name FROM dividend_events e JOIN fund_classes f ON f.id=e.fund_class_id ORDER BY e.id DESC"); }
     @PostMapping("/admin/dividends")
     Map<String,Object> createDividend(@RequestBody Map<String,Object> input) { operator();return dividends.create(input); }
     @PostMapping("/admin/dividends/{id}/snapshot")
-    Map<String,Object> snapshot(@PathVariable long id) { operator();return dividends.snapshot(id); }
+    ResponseEntity<Map<String,Object>> snapshot(@PathVariable long id,@RequestBody(required=false) Map<String,Object> input) { operator();return enqueue("DIVIDEND_SNAPSHOT",id,input==null?Map.of():input); }
     @PostMapping("/admin/dividends/{id}/execute")
-    Map<String,Object> execute(@PathVariable long id) { operator();return dividends.execute(id); }
+    ResponseEntity<Map<String,Object>> execute(@PathVariable long id,@RequestBody(required=false) Map<String,Object> input) { operator();return enqueue("DIVIDEND_EXECUTE",id,input==null?Map.of():input); }
 
     @GetMapping("/money-income")
     List<Map<String,Object>> income() {
@@ -91,7 +97,7 @@ class AdvancedController {
     }
     @GetMapping("/conversions")
     List<Map<String,Object>> conversions() {
-        return s.db.rows("SELECT c.*,a.name source_name,b.name target_name FROM conversions c JOIN fund_classes a ON a.id=c.source_class_id JOIN fund_classes b ON b.id=c.target_class_id WHERE c.user_id=? ORDER BY c.id DESC",s.accounts.userId());
+        return s.db.rows("SELECT c.*,tc.confirmation_no,a.name source_name,b.name target_name FROM conversions c JOIN fund_classes a ON a.id=c.source_class_id JOIN fund_classes b ON b.id=c.target_class_id LEFT JOIN trade_confirmations tc ON tc.id=c.current_confirmation_id WHERE c.user_id=? ORDER BY c.id DESC",s.accounts.userId());
     }
     @PostMapping("/conversions")
     Map<String,Object> convert(@RequestBody Map<String,Object> input) { return conversions.submit(s.accounts.userId(),input); }
@@ -102,7 +108,7 @@ class AdvancedController {
     @PostMapping("/admin/funds/{id}/terminate")
     Map<String,Object> terminate(@PathVariable long id,@RequestBody Map<String,Object> input) { s.accounts.requireRole("ADMIN");return lifecycle.terminate(id,input); }
     @PostMapping("/admin/liquidations")
-    Map<String,Object> liquidate(@RequestBody Map<String,Object> input) { s.accounts.requireRole("ADMIN");return lifecycle.liquidate(input); }
+    ResponseEntity<Map<String,Object>> liquidate(@RequestBody Map<String,Object> input) { s.accounts.requireRole("ADMIN");return enqueue("LIQUIDATION",id(input,"fundClassId"),input); }
     @GetMapping("/admin/liquidations")
     List<Map<String,Object>> liquidations() { operator();return s.db.rows("SELECT e.*,f.name fund_name FROM liquidation_events e JOIN fund_classes f ON f.id=e.fund_class_id ORDER BY e.id DESC"); }
     @GetMapping("/admin/cash-entries")

@@ -14,7 +14,10 @@ import static com.hengsheng.fund.AdvancedSupport.*;
 @Service
 class ConversionService {
     private final AdvancedSupport s;
-    ConversionService(AdvancedSupport s) { this.s=s; }
+    private final BusinessNumberService numbers;
+    private final ConfirmationService confirmations;
+    private final TradingDayGate days;
+    ConversionService(AdvancedSupport s,BusinessNumberService numbers,ConfirmationService confirmations,TradingDayGate days) { this.s=s;this.numbers=numbers;this.confirmations=confirmations;this.days=days; }
     Map<String,Object> quote(long userId,Map<String,Object> input) {
         long aid=id(input,"tradingAccountId"),source=id(input,"sourceClassId"),target=id(input,"targetClassId");
         BigDecimal requested=amount(input,"shares",4);s.account(userId,aid,false);
@@ -38,10 +41,19 @@ class ConversionService {
         result.put("supplementFee",supplement.toPlainString());result.put("totalFee",redeemFee.add(supplement).toPlainString());
         result.put("targetShares",gross.subtract(redeemFee).subtract(supplement).divide(targetNav,4,RoundingMode.HALF_UP).toPlainString());return result;
     }
-    @Transactional
     Map<String,Object> submit(long userId,Map<String,Object> input) {
+        long source=id(input,"sourceClassId");var rule=s.db.one("SELECT cutoff_time FROM fund_classes WHERE id=?",source);LocalDate day=s.openDate(s.now().toLocalDate());if(day.equals(s.now().toLocalDate())&&!s.now().toLocalTime().isBefore(LocalTime.parse(rule.get("cutoffTime").toString())))day=s.nextOpen(day,1);
+        days.prepare(day);LocalDate admittedDate=day;return s.tx(()->submitTransaction(userId,input,admittedDate));
+    }
+    private Map<String,Object> submitTransaction(long userId,Map<String,Object> input,LocalDate admission) {
         long aid=id(input,"tradingAccountId"),source=id(input,"sourceClassId"),target=id(input,"targetClassId");
         BigDecimal shares=amount(input,"shares",4);String key=text(input,"requestKey");
+        var known=s.db.rows("SELECT * FROM conversions WHERE user_id=? AND request_key=?",userId,key);
+        if(!known.isEmpty()){var prior=known.getFirst();if(id(prior,"tradingAccountId")!=aid||id(prior,"sourceClassId")!=source||id(prior,"targetClassId")!=target||shares.compareTo(decimal(prior.get("shares")))!=0)throw ApiException.conflict("请求键已用于另一笔转换");return prior;}
+        days.enter(admission);
+        s.account(userId,aid,false);
+        s.db.rows("SELECT id FROM fund_classes WHERE id IN (?,?) ORDER BY id FOR UPDATE",source,target);
+        s.db.one("SELECT id FROM users WHERE id=? FOR UPDATE",userId);
         var old=s.db.rows("SELECT * FROM conversions WHERE user_id=? AND request_key=?",userId,key);
         if(!old.isEmpty()) {
             var prior=old.getFirst();
@@ -49,7 +61,6 @@ class ConversionService {
                 throw new IllegalArgumentException("请求键已用于另一笔转换");
             return prior;
         }
-        s.db.rows("SELECT id FROM fund_classes WHERE id IN (?,?) ORDER BY id FOR UPDATE",source,target);
         s.account(userId,aid,false);
         var from=s.db.one("SELECT * FROM fund_classes WHERE id=?",source);
         var to=s.eligible(userId,aid,target,"OPEN",false);
@@ -58,11 +69,15 @@ class ConversionService {
                 || s.db.rows("SELECT * FROM conversion_pairs WHERE source_class_id=? AND target_class_id=? AND enabled=TRUE",source,target).isEmpty())
             throw new IllegalArgumentException("不支持该基金转换组合");
         if(shares.compareTo(decimal(from.get("minRedemption")))<0) throw new IllegalArgumentException("低于最低转换份额");
-        LocalDate day=s.openDate(s.now().toLocalDate());
-        if(day.equals(s.now().toLocalDate()) && !s.now().toLocalTime().isBefore(LocalTime.parse(from.get("cutoffTime").toString()))) day=s.nextOpen(day,1);
+        LocalDate day=admission;
         LocalDate confirm=s.nextOpen(day,Math.toIntExact(id(from,"confirmationDays")));
         var allocations=s.trades.reserveLots(userId,aid,source,shares);
         long cid=s.db.insert("INSERT INTO conversions(user_id,trading_account_id,source_class_id,target_class_id,shares,application_date,confirmation_date,planned_confirmation_date,cutoff_time,source_rate,target_rate,redemption_rate,source_rule_version,target_rule_version,request_key,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",userId,aid,source,target,shares,day,confirm,confirm,from.get("cutoffTime"),from.get("purchaseRate"),to.get("purchaseRate"),from.get("redemptionRate"),from.get("ruleVersion"),to.get("ruleVersion"),key,s.now());
+        var accepted=s.db.one("SELECT bank_card_id,binding_version FROM trading_accounts WHERE id=?",aid);
+        s.db.update("UPDATE conversions SET accepted_source_card_id=?,accepted_binding_version=?,accepted_fund_account_id=? WHERE id=?",accepted.get("bankCardId"),accepted.get("bindingVersion"),allocations.getFirst().get("fundAccountId"),cid);
+        String applicationNumber=numbers.next("APPLICATION",day);
+        s.db.update("UPDATE conversions SET application_no=? WHERE id=?",applicationNumber,cid);
+        numbers.bind("APPLICATION",applicationNumber,"CONVERSION",cid,0);
         for(var row:allocations) {
             s.db.insert("INSERT INTO conversion_allocations(conversion_id,lot_id,shares,cost,source_card_id,fund_account_id,acquired_date) VALUES(?,?,?,?,?,?,?)",cid,row.get("lotId"),row.get("shares"),row.get("cost"),row.get("sourceCardId"),row.get("fundAccountId"),row.get("acquiredDate"));
             s.trades.shareEntry(userId,aid,source,id(row,"lotId"),"CONVERSION",Long.toString(cid),"RESERVE",BigDecimal.ZERO,decimal(row.get("shares")),BigDecimal.ZERO);
@@ -76,6 +91,8 @@ class ConversionService {
     }
     @Transactional
     Map<String,Object> cancel(long userId,long cid) {
+        var meta=s.db.one("SELECT * FROM conversions WHERE id=? AND user_id=?",cid,userId);if("CANCELLED".equals(meta.get("status")))return meta;
+        days.enter(date(meta.get("applicationDate")));s.account(userId,id(meta,"tradingAccountId"),false);
         var conversion=s.db.one("SELECT * FROM conversions WHERE id=? AND user_id=? FOR UPDATE",cid,userId);
         if("CANCELLED".equals(conversion.get("status"))) return conversion;
         if(!"SUBMITTED".equals(conversion.get("status")) || !s.now().isBefore(date(conversion.get("applicationDate")).atTime(LocalTime.parse(conversion.get("cutoffTime").toString()))))
@@ -87,7 +104,8 @@ class ConversionService {
     }
     Map<String,Object> run(LocalDate date) {
         int done=0,waiting=0,failed=0;var details=new java.util.ArrayList<String>();
-        for(var row:s.db.rows("SELECT id FROM conversions WHERE status='SUBMITTED' AND confirmation_date<=? ORDER BY id",date)) {
+        long cursor=0;while(true){var page=s.db.rows("SELECT id FROM conversions WHERE status='SUBMITTED' AND confirmation_date<=? AND id>? ORDER BY id LIMIT 200",date,cursor);if(page.isEmpty())break;
+        for(var row:page) {cursor=id(row,"id");
             try {
                 if(s.tx(()->confirm(id(row,"id")))) done++;
                 else {
@@ -95,17 +113,19 @@ class ConversionService {
                     if("SUBMITTED".equals(state.get("status"))) { waiting++;details.add("转换"+row.get("id")+"："+java.util.Objects.requireNonNullElse(state.get("reason"),"尚未到计划确认时间")); }
                 }
             } catch(RuntimeException ex) { failed++;details.add("转换"+row.get("id")+"："+ex.getMessage()); }
-        }
+        }}
         return Map.of("processed",done,"waiting",waiting,"failed",failed,"details",details);
     }
     private boolean confirm(long id) {
-        var context=s.db.one("SELECT source_class_id,target_class_id FROM conversions WHERE id=?",id);
+        var context=s.db.one("SELECT source_class_id,target_class_id,user_id,trading_account_id FROM conversions WHERE id=?",id);
+        s.account(id(context,"userId"),id(context,"tradingAccountId"),false);
         s.db.rows("SELECT id FROM fund_classes WHERE id IN (?,?) ORDER BY id FOR UPDATE",context.get("sourceClassId"),context.get("targetClassId"));
         var row=s.db.one("SELECT * FROM conversions WHERE id=? FOR UPDATE",id);
         if(!"SUBMITTED".equals(row.get("status"))) return false;
         if(!s.due(date(row.get("confirmationDate")),9)) return false;
-        var from=s.db.rows("SELECT nav FROM nav_records WHERE fund_class_id=? AND date=? AND published=TRUE",row.get("sourceClassId"),row.get("applicationDate"));
-        var to=s.db.rows("SELECT nav FROM nav_records WHERE fund_class_id=? AND date=? AND published=TRUE",row.get("targetClassId"),row.get("applicationDate"));
+        if(!s.openDate(s.now().toLocalDate()).equals(s.now().toLocalDate())){s.db.update("UPDATE conversions SET reason='等待开放工作日确认' WHERE id=?",id);return false;}
+        var from=s.db.rows("SELECT nav FROM nav_records WHERE fund_class_id=? AND date=? AND published=TRUE FOR SHARE",row.get("sourceClassId"),row.get("applicationDate"));
+        var to=s.db.rows("SELECT nav FROM nav_records WHERE fund_class_id=? AND date=? AND published=TRUE FOR SHARE",row.get("targetClassId"),row.get("applicationDate"));
         if(from.isEmpty() || to.isEmpty()) {
             s.db.update("UPDATE conversions SET reason='等待双方所属交易日净值' WHERE id=?",id);return false;
         }
@@ -127,6 +147,7 @@ class ConversionService {
             totalShares=totalShares.add(targetShares);totalFees=totalFees.add(redeemFee).add(supplement);
         }
         s.db.update("UPDATE conversions SET status='COMPLETED',source_nav=?,target_nav=?,target_shares=?,fee=?,reason=NULL,confirmation_date=?,confirmed_at=? WHERE id=?",sourceNav,targetNav,totalShares,totalFees,s.now().toLocalDate(),s.now(),id);
+        confirmations.record("CONVERSION",id,ClearingExecutionContext.currentRunId(),s.openDate(ClearingExecutionContext.businessTime()==null?s.now().toLocalDate():ClearingExecutionContext.businessTime().toLocalDate()),s.now().toLocalDate(),s.db.one("SELECT * FROM conversions WHERE id=?",id));
         s.db.update("UPDATE nav_records SET used=TRUE WHERE date=? AND fund_class_id IN (?,?)",row.get("applicationDate"),row.get("sourceClassId"),row.get("targetClassId"));
         s.accounts.notifyUser(id(row,"userId"),"CONVERSION",Long.toString(id),"转换已确认","来源账户保持不变，目标份额已登记");return true;
     }

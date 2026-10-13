@@ -111,15 +111,17 @@ class CoreRulesTest {
         assertThat(db.scalar("SELECT cost FROM order_lot_allocations WHERE order_id=?",oid)).isEqualByComparingTo("550.00");
         assertThat(db.scalar("SELECT SUM(cost_delta) FROM share_entries WHERE lot_id=?",lot)).isEqualByComparingTo("550.00");
     }
-    @Test void existingBusinessFreezesProductTypeRegistrarAndManagerButAllowsOtherDetails(){
+    @Test void existingBusinessFreezesProductCodeTypeRegistrarAndManagerButAllowsOtherDetails(){
         trades.submit(uid,buy("identity","100.00"));db.update("UPDATE users SET role='ADMIN' WHERE id=?",uid);
         assertThatThrownBy(()->funds.saveFund(fid,Map.of("type","MONEY"))).isInstanceOf(ApiException.class);
         assertThatThrownBy(()->funds.saveFund(fid,Map.of("registrarId",2))).isInstanceOf(ApiException.class);
         assertThatThrownBy(()->funds.saveFund(fid,Map.of("manager","另一管理人"))).isInstanceOf(ApiException.class);
+        assertThatThrownBy(()->funds.saveFund(fid,Map.of("code","CHANGED"))).isInstanceOf(ApiException.class);
         assertThat(funds.saveFund(fid,Map.of("name","可更正的基金说明")).get("name")).isEqualTo("可更正的基金说明");
     }
     @Test void aProductWithNoBusinessCanStillCorrectItsIdentity(){
-        db.update("UPDATE users SET role='ADMIN' WHERE id=?",uid);var saved=funds.saveFund(fid,Map.of("type","MONEY","registrarId",2,"manager","更正模拟管理"));
+        db.update("UPDATE users SET role='ADMIN' WHERE id=?",uid);var saved=funds.saveFund(fid,Map.of("code","CORRECTED","type","MONEY","registrarId",2,"manager","更正模拟管理"));
+        assertThat(saved.get("code")).isEqualTo("CORRECTED");
         assertThat(saved.get("type")).isEqualTo("MONEY");assertThat(Db.id(saved.get("registrarId"))).isEqualTo(2);assertThat(saved.get("manager")).isEqualTo("更正模拟管理");
     }
     @Test void ordinaryEditingCannotReopenAProductWithAnUnsettledOffering(){
@@ -153,7 +155,10 @@ class CoreRulesTest {
         dividends.create(Map.of("fundClassId",fid,"recordDate","2026-10-12","exDate","2026-10-13","paymentDate","2026-10-14","perShare","0.600000"));
         dividends.create(Map.of("fundClassId",fid,"recordDate","2026-10-13","exDate","2026-10-14","paymentDate","2026-10-15","perShare","0.600000"));
         db.update("UPDATE app_settings SET value='2026-10-14T16:00:00' WHERE name='demo_clock'");
-        assertThatThrownBy(()->funds.market(LocalDate.parse("2026-10-14"))).isInstanceOf(ApiException.class).hasMessageContaining("净值非正");
+        var result=funds.market(LocalDate.parse("2026-10-14"));
+        assertThat(((Number)result.get("failed")).intValue()).isPositive();
+        assertThat(result.get("details").toString()).contains("行情产品"+fid,"净值非正");
+        assertThat(db.scalar("SELECT COUNT(*) FROM nav_records WHERE fund_class_id=? AND date='2026-10-14'",fid)).isZero();
     }
     @Test void consumptionRefreshesConversionCostAndPreservesFinalCentRemainder(){
         long fa=accounts.linkFundAccount(uid,tid,fid),lot=trades.addLot(uid,tid,fid,cid,fa,new BigDecimal("3.0000"),new BigDecimal("1.00"),LocalDate.parse("2026-10-01"),"FIXTURE","three");

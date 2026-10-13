@@ -1,5 +1,10 @@
 import { test, expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+
+const isolatedClearingTest=['fund_sim_test','fund_sim_upgrade_test'].includes(process.env.E2E_CLEARING_TEST||'')
+test.use({video:isolatedClearingTest?'on':'off',trace:isolatedClearingTest?'on':'retain-on-failure'})
 
 test.describe('真实服务浏览器验收', () => {
   test.skip(!process.env.E2E_API, '需要8080后端与E2E_API=1')
@@ -228,7 +233,12 @@ test.describe('真实服务浏览器验收', () => {
     await admin.goto('/admin/trading');await loaded(admin)
     await admin.getByLabel('任务类型').selectOption('CONFIRM')
     await admin.getByLabel('业务日期').fill(confirmationDate)
+    const submitted=admin.waitForResponse(response=>response.url().endsWith('/api/admin/jobs')&&response.request().method()==='POST')
     await admin.getByRole('button',{name:'执行任务',exact:true}).click()
+    const response=await submitted
+    expect(response.status()).toBe(202)
+    const {runId}=await response.json()
+    await expect.poll(async()=>{const task=await(await admin.request.get('/api/admin/clearing-runs/'+runId)).json();return task.state},{timeout:60000}).toBe('COMPLETED')
     await expect.poll(async()=>{return(await(await page.request.get('/api/orders')).json()).filter((o:any)=>o.type==='PURCHASE').every((o:any)=>o.status==='COMPLETED')}).toBe(true)
     let portfolio=await(await page.request.get('/api/portfolio')).json()
     expect(portfolio.positions.find((p:any)=>p.tradingAccountId===first.tradingAccountId).shares).toBe('500.0000')
@@ -376,5 +386,229 @@ test.describe('真实服务浏览器验收', () => {
     expect(failures).toEqual([]);expect(adminFailures).toEqual([]);expect(operatorFailures).toEqual([])
     console.log('重绑/现金更正QA账户 '+username+'；原交易账户 '+second.tradingAccountId+'→'+rebound.tradingAccountId+'；原流水 '+entry.id+' 不变')
     await operatorContext.close();await adminContext.close()
+  })
+  test.describe('清算升级隔离真实流程',()=>{
+    test('双卡编号、真实重清与阻断、17字段文件重导及角色权限',async({page,browser},testInfo)=>{
+      test.skip(!isolatedClearingTest,'仅允许受控隔离测试数据库验收脚本运行')
+      test.setTimeout(240000)
+      expect(new URL(String(testInfo.project.use.baseURL)).port).toBe('15173')
+      const stamp=Date.now().toString(36),password='Qatest12345!',username='cl'+stamp,displayName='清算验收 '+stamp
+      const evidence:Record<string,any>={database:process.env.E2E_CLEARING_TEST,username,stamp,screenshots:[]}
+      const adminContext=await browser.newContext({baseURL:String(testInfo.project.use.baseURL),recordVideo:{dir:testInfo.outputPath('admin-video')}})
+      adminContext.setDefaultTimeout(12000)
+      const admin=await adminContext.newPage()
+      const blockContext=await browser.newContext({baseURL:String(testInfo.project.use.baseURL),recordVideo:{dir:testInfo.outputPath('blocked-investor-video')}})
+      blockContext.setDefaultTimeout(12000)
+      const blockedInvestor=await blockContext.newPage()
+      const operatorContext=await browser.newContext({baseURL:String(testInfo.project.use.baseURL),recordVideo:{dir:testInfo.outputPath('operator-video')}})
+      operatorContext.setDefaultTimeout(12000)
+      const operator=await operatorContext.newPage()
+      let failures:string[]=[],adminFailures:string[]=[]
+      let originalClock:any
+      let workflowError:unknown
+      async function get(target:Page,path:string){const response=await target.request.get('/api'+path);expect(response.ok(),path+': '+await response.text()).toBe(true);return response.json()}
+      async function post(target:Page,path:string,data:any,expected=200){
+        const csrf=await get(target,'/auth/csrf')
+        const response=await target.request.post('/api'+path,{data,headers:{[csrf.headerName]:csrf.token}})
+        expect(response.status(),path+': '+await response.text()).toBe(expected)
+        return response.json()
+      }
+      async function shot(target:Page,name:string){const path=testInfo.outputPath(name+'.png');await target.screenshot({path,fullPage:true});evidence.screenshots.push(name+'.png');await testInfo.attach(name,{path,contentType:'image/png'})}
+      async function clock(value:string){await post(admin,'/admin/clock',{dateTime:value});expect((await get(admin,'/admin/clock')).dateTime).toBe(value)}
+      async function waitRun(id:number){
+        let run:any
+        await expect.poll(async()=>{run=await get(admin,'/admin/clearing-runs/'+id);return ['QUEUED','RUNNING'].includes(run.state)?'PENDING':run.state},{timeout:60000,intervals:[100,300,1000]}).not.toBe('PENDING')
+        evidence.runs??=[];evidence.runs.push(run)
+        expect(run.state,String(run.reason)).toBe('COMPLETED')
+        expect(run.progress.percent).toBe(100);expect(run.startedAt).toBeTruthy();expect(run.finishedAt).toBeTruthy()
+        expect(run.nodes.every((node:any)=>['COMPLETED','NO_WORK'].includes(node.state))).toBe(true)
+        return run
+      }
+      async function buy(target:Page,fund:any,card:any,amount:string){
+        await target.goto('/market');await loaded(target)
+        await target.locator('.fund-card').filter({hasText:fund.name}).getByRole('button',{name:'申购',exact:true}).click()
+        const dialog=target.getByRole('dialog')
+        await dialog.getByLabel('来源交易账户 / 结算卡').selectOption(String(card.tradingAccountId))
+        await dialog.getByLabel('购入金额（元，最多两位小数）').fill(amount)
+        await dialog.getByRole('button',{name:'预估费用与份额'}).click();await expect(dialog.locator('.trade-summary')).toBeVisible()
+        await dialog.getByRole('button',{name:'确认提交申请'}).click();await expect(dialog).not.toBeVisible()
+      }
+      async function revision(fundId:number,date:string){
+        await admin.goto('/admin/products');await loaded(admin)
+        await admin.getByRole('button',{name:'净值修订',exact:true}).click()
+        const form=admin.locator('.panel').filter({has:admin.getByRole('heading',{name:'保存净值候选修订',exact:true})})
+        await form.getByRole('combobox',{name:'基金类别',exact:true}).selectOption(String(fundId))
+        await form.getByLabel('行情所属日期').fill(date);await form.getByLabel('修订单位净值').fill('1.250000')
+        await form.getByLabel('修订原因',{exact:true}).fill('隔离真实浏览器验收 '+stamp)
+        const response=admin.waitForResponse(r=>r.url().endsWith('/api/admin/nav-revisions')&&r.request().method()==='POST')
+        await form.getByRole('button',{name:'保存候选修订',exact:true}).click()
+        const saved=await response;expect(saved.status()).toBe(200)
+        const {revisionSetId}=await saved.json()
+        await expect(admin.getByText('候选修订集合 '+revisionSetId+' 已保存。',{exact:true})).toBeVisible()
+        await admin.getByRole('link',{name:'查看影响预演',exact:true}).click();await loaded(admin)
+        const previewResponse=admin.waitForResponse(r=>r.url().endsWith('/api/admin/reclearing/previews')&&r.request().method()==='POST')
+        await admin.getByRole('button',{name:'生成影响预演',exact:true}).click()
+        const preview=await previewResponse;expect(preview.status()).toBe(200)
+        return preview.json()
+      }
+      try {
+        await signIn(admin,'admin','Admin12345!');adminFailures=monitor(admin);originalClock=await get(admin,'/admin/clock')
+        const registrars=await get(admin,'/registrars'),blockedRegistrar=registrars.find((r:any)=>r.name==='模拟登记机构二')
+        expect(blockedRegistrar).toBeTruthy()
+        evidence.originalClock=originalClock.dateTime
+        const start=new Date(originalClock.dateTime.slice(0,10)+'T00:00:00Z');start.setUTCDate(start.getUTCDate()+28)
+        while(start.getUTCDay()!==1)start.setUTCDate(start.getUTCDate()+1)
+        const existingExports=await get(admin,'/admin/application-exports')
+        const existingOrders=await get(admin,'/admin/orders')
+        const existingCalendar=await get(admin,'/admin/trading-calendar')
+        while(existingExports.some((e:any)=>e.businessDate===start.toISOString().slice(0,10))||existingOrders.some((o:any)=>o.applicationDate===start.toISOString().slice(0,10))||[-3,0,1,2,3,4].some(offset=>existingCalendar.some((day:any)=>day.date===new Date(start.getTime()+offset*86400000).toISOString().slice(0,10)&&!day.open)))start.setUTCDate(start.getUTCDate()+7)
+        const date=start.toISOString().slice(0,10),confirmDate=new Date(start.getTime()+86400000).toISOString().slice(0,10),referenceDate=new Date(start.getTime()-3*86400000).toISOString().slice(0,10)
+        evidence.dates={referenceDate,date,confirmDate}
+        for(const day of [referenceDate,...[0,1,2,3,4].map(offset=>new Date(start.getTime()+offset*86400000).toISOString().slice(0,10))])if(!existingCalendar.some((entry:any)=>entry.date===day))await post(admin,'/admin/trading-calendar',{date:day,open:true})
+        await clock(date+'T14:00')
+        await admin.goto('/admin/products');await loaded(admin);await admin.getByRole('button',{name:'＋ 新建基金类别'}).click()
+        let dialog=admin.getByRole('dialog')
+        await dialog.getByLabel('基金类别代码').fill('CL'+stamp)
+        await dialog.getByLabel('产品名称（含A/C类别）').fill('清算验收债券 A '+stamp)
+        await dialog.getByLabel('投资类型').selectOption('BOND');await dialog.getByRole('combobox',{name:'登记机构',exact:true}).selectOption({label:'模拟登记机构三'})
+        await dialog.getByLabel('风险等级').selectOption('2');await dialog.getByLabel('管理人').fill('隔离模拟资产管理')
+        await dialog.getByLabel('申购费率（小数）').fill('0');await dialog.getByLabel('赎回基础费率（小数）').fill('0')
+        await dialog.getByRole('button',{name:'保存',exact:true}).click();await expect(dialog).not.toBeVisible()
+        const fund=(await get(admin,'/admin/funds')).find((f:any)=>f.code==='CL'+stamp);expect(fund).toBeTruthy();evidence.fund=fund
+        await post(admin,'/admin/navs',{fundClassId:fund.id,date:referenceDate,nav:'1.000000'})
+        await page.goto('/');await page.getByRole('button',{name:'注册账户',exact:true}).click()
+        await page.getByLabel('用户名',{exact:true}).fill(username);await page.getByLabel('模拟持卡人 / 昵称').fill(displayName)
+        await page.getByLabel('密码',{exact:true}).fill(password);await page.getByRole('button',{name:'注册并登录'}).click();await expect(page.locator('.sidebar')).toBeVisible()
+        failures=monitor(page)
+        await page.goto('/profile');await loaded(page);await page.getByRole('button',{name:'开通模拟客户账户'}).click();await expect(page.getByText('已开通',{exact:true})).toBeVisible()
+        await page.getByRole('button',{name:'进行风险测评'}).click()
+        for(let i=0;i<10;i++)await page.locator('.risk-question').nth(i).getByRole('radio').nth(4).check()
+        await page.getByRole('button',{name:'提交测评'}).click();await expect.poll(async()=>(await get(page,'/me')).riskLevel).toBe(5)
+        await page.goto('/accounts');await loaded(page)
+        for(const bankName of ['模拟工商银行','模拟建设银行']){
+          await page.getByRole('button',{name:'＋ 绑定模拟卡'}).click();dialog=page.getByRole('dialog')
+          await dialog.getByLabel('模拟银行名称').fill(bankName);await dialog.getByRole('button',{name:'绑定并建立交易账户'}).click();await expect(dialog).not.toBeVisible()
+        }
+        const cards=await get(page,'/bank-cards');expect(cards.map((c:any)=>c.available)).toEqual(['100000.00','0.00'])
+        await page.locator('.bank-card').nth(1).getByRole('button',{name:'充值',exact:true}).click();dialog=page.getByRole('dialog')
+        await dialog.getByLabel('金额（元）').fill('1000.00');await dialog.getByRole('button',{name:'确认',exact:true}).click();await expect(dialog).not.toBeVisible()
+        await buy(page,fund,cards[0],'1000.00');await buy(page,fund,cards[1],'500.00')
+        const applications=(await get(page,'/orders')).filter((o:any)=>o.fundClassId===fund.id).sort((a:any,b:any)=>a.tradingAccountId-b.tradingAccountId)
+        expect(applications).toHaveLength(2);expect(new Set(applications.map((o:any)=>o.applicationNo)).size).toBe(2)
+        for(const [i,order] of applications.entries()){
+          expect(order).toMatchObject({applicationDate:date,confirmationDate:confirmDate,status:'SUBMITTED',tradingAccountId:cards[i].tradingAccountId,sourceCardId:cards[i].id,amount:i?'500.00':'1000.00'})
+          expect(order.applicationNo).toMatch(new RegExp('^'+date.replaceAll('-','')+'\\d{6}$'));expect(order.confirmationNo).toBeNull()
+        }
+        expect((await get(page,'/bank-cards')).map((c:any)=>[c.available,c.frozen])).toEqual([['99000.00','1000.00'],['500.00','500.00']])
+        evidence.applications=applications;evidence.cards=cards
+        await page.goto('/orders');await loaded(page);await shot(page,'01-dual-card-application-numbers')
+        const blockedUsername='cb'+stamp,blockedFund=await post(admin,'/admin/funds',{code:'CB'+stamp,name:'不足阻断债券 A '+stamp,type:'BOND',manager:'隔离模拟资产管理',registrarId:blockedRegistrar.id,riskLevel:2,state:'OPEN',purchaseRate:'0',redemptionRate:'0',minPurchase:'100',minRedemption:'1',purchaseOpen:true,redemptionOpen:true})
+        await post(admin,'/admin/navs',{fundClassId:blockedFund.id,date:referenceDate,nav:'1.000000'})
+        await post(blockedInvestor,'/auth/register',{username:blockedUsername,password,displayName:'不足阻断客户 '+stamp});await signIn(blockedInvestor,blockedUsername,password)
+        await post(blockedInvestor,'/account/open',{});await post(blockedInvestor,'/risk-assessments',{answers:Array(10).fill(5)})
+        const blockedCard=await post(blockedInvestor,'/bank-cards',{bankName:'模拟工商银行',holderName:'不足阻断客户 '+stamp,requestKey:'blocked-card-'+stamp})
+        await buy(blockedInvestor,blockedFund,blockedCard,'1000.00')
+        await clock(date+'T15:10')
+        for(const product of [fund,blockedFund])await post(admin,'/admin/navs',{fundClassId:product.id,date,nav:'1.000000'})
+        await clock(confirmDate+'T09:10')
+        await admin.goto('/admin/trading');await loaded(admin);await admin.getByLabel('任务类型').selectOption('CONFIRM');await admin.getByLabel('业务日期',{exact:true}).fill(confirmDate)
+        const confirmationResponse=admin.waitForResponse(r=>r.url().endsWith('/api/admin/jobs')&&r.request().method()==='POST')
+        await admin.getByRole('button',{name:'执行任务',exact:true}).click();const submitted=await confirmationResponse;expect(submitted.status()).toBe(202)
+        const confirmationRun=(await submitted.json()).runId;await waitRun(confirmationRun)
+        await expect(admin.locator('.job-result')).toContainText('进度 100%');await shot(admin,'02-confirmation-run-nodes')
+        const originalOrders=await Promise.all(applications.map((o:any)=>get(page,'/orders/'+o.id)))
+        for(const [i,order] of originalOrders.entries()){expect(order.status).toBe('COMPLETED');expect(order.shares).toBe(i?'500.0000':'1000.0000');expect(order.confirmationNo).toMatch(new RegExp('^'+confirmDate.replaceAll('-','')+'\\d{6}$'))}
+        const unchanged=await get(page,'/portfolio'),preview=await revision(fund.id,date)
+        evidence.readyPreview=preview
+        expect(preview.state).toBe('READY');expect(preview.blockers).toEqual([]);expect(preview.changes).toHaveLength(2)
+        for(const [i,order] of originalOrders.entries())expect(preview.changes.find((c:any)=>c.sourceType==='ORDER'&&Number(c.sourceId)===order.id)).toMatchObject({tradingAccountId:order.tradingAccountId,effectiveDate:confirmDate,before:{shares:i?'500.0000':'1000.0000',amount:order.amount},after:{shares:i?'400.0000':'800.0000',netAmount:order.amount}})
+        expect(await get(page,'/portfolio')).toEqual(unchanged);evidence.readyPreview=preview
+        await shot(admin,'03-ready-real-differences')
+        const reclearResponse=admin.waitForResponse(r=>r.url().endsWith('/api/admin/reclearing/runs')&&r.request().method()==='POST')
+        await admin.getByRole('button',{name:'确认执行重新清算',exact:true}).click();const accepted=await reclearResponse;expect(accepted.status()).toBe(202)
+        const reclearRun=(await accepted.json()).runId;await waitRun(reclearRun)
+        const histories=[]
+        await page.goto('/orders');await loaded(page)
+        for(const [i,before] of originalOrders.entries()){
+          const after=await get(page,'/orders/'+before.id),history=await get(page,'/orders/'+before.id+'/confirmations')
+          expect(after).toMatchObject({applicationNo:before.applicationNo,tradingAccountId:before.tradingAccountId,sourceCardId:before.sourceCardId,amount:before.amount,applicationDate:date,shares:i?'400.0000':'800.0000'})
+          expect(after.confirmationNo).not.toBe(before.confirmationNo);expect(history).toHaveLength(2)
+          expect(history.map((h:any)=>h.status).sort()).toEqual(['ACTIVE','REVERSED']);expect(new Set(history.map((h:any)=>h.roundId)).size).toBe(2)
+          expect(history.every((h:any)=>h.marketDate===date&&h.effectiveDate===confirmDate&&h.processedAt)).toBe(true)
+          const position=(await get(page,'/portfolio')).positions.find((p:any)=>p.tradingAccountId===before.tradingAccountId&&p.fundClassId===fund.id)
+          expect(position).toMatchObject({shares:i?'400.0000':'800.0000',cost:before.amount,frozenShares:'0.0000'})
+          await page.locator('tbody tr').filter({hasText:before.applicationNo}).getByRole('button',{name:'详情',exact:true}).click()
+          const historyDialog=page.getByRole('dialog');await expect(historyDialog).toContainText('已冲正');await expect(historyDialog).toContainText(after.confirmationNo)
+          await shot(page,'04-confirmation-history-card-'+i);await historyDialog.getByRole('button',{name:'Close this dialog'}).click();histories.push(history)
+        }
+        evidence.histories=histories;expect((await get(page,'/bank-cards')).map((c:any)=>[c.available,c.frozen])).toEqual([['99000.00','0.00'],['500.00','0.00']])
+        await admin.goto('/admin/trading');await loaded(admin);await admin.getByRole('button',{name:'申请文件',exact:true}).click()
+        await admin.getByLabel('文件业务日期').fill(date);await admin.getByRole('combobox',{name:'登记机构',exact:true}).selectOption(String(fund.registrarId))
+        const exportResponse=admin.waitForResponse(r=>r.url().endsWith('/api/admin/application-exports')&&r.request().method()==='POST')
+        await admin.getByRole('button',{name:'生成申请文件',exact:true}).click();const exportAccepted=await exportResponse;expect(exportAccepted.status()).toBe(202)
+        const exportTask=await exportAccepted.json();await waitRun(exportTask.runId)
+        const firstExport=await get(admin,'/admin/application-exports/'+exportTask.exportId);expect(firstExport.state).toBe('COMPLETED')
+        evidence.exportTask={exportTask,firstExport}
+        await admin.getByRole('button',{name:'申请文件',exact:true}).click()
+        await admin.getByRole('button',{name:'刷新文件状态',exact:true}).click()
+        const exportRow=admin.locator('tbody tr').filter({hasText:firstExport.checksum})
+        await expect(exportRow).toHaveCount(1);await shot(admin,'05-application-export-snapshot')
+        async function download(name:string){const pending=admin.waitForEvent('download');await exportRow.getByRole('link',{name:'下载文件',exact:true}).click();const file=await pending;const path=testInfo.outputPath(name);await file.saveAs(path);return readFile(path)}
+        const firstFile=await download('applications-first.csv'),checksum=createHash('sha256').update(firstFile).digest('hex')
+        expect(checksum).toBe(firstExport.checksum)
+        const lines:string[]=firstFile.toString('utf8').trimEnd().split(/\r?\n/),headers=lines[0].split(',')
+        expect(headers).toEqual(['protocol_version','application_date','application_no','business_type','trading_account_no','fund_account_no','source_fund_code','target_fund_code','source_ta_id','target_ta_id','application_amount','application_shares','source_sim_card_no','binding_version','accepted_business_time','source_type','source_id'])
+        const fileRows=lines.slice(1).map(line=>{const values=line.split(',');expect(values).toHaveLength(17);return Object.fromEntries(headers.map((key,i)=>[key,values[i]]))})
+        const fundAccounts=await get(page,'/fund-accounts')
+        for(const [i,order] of applications.entries())expect(fileRows.find(row=>row.application_no===order.applicationNo)).toEqual({protocol_version:'MOCK-TA-APPLICATION-1',application_date:date,application_no:order.applicationNo,business_type:'PURCHASE',trading_account_no:cards[i].accountNo,fund_account_no:fundAccounts.find((a:any)=>a.id===order.fundAccountId).accountNo,source_fund_code:fund.code,target_fund_code:'',source_ta_id:String(fund.registrarId),target_ta_id:'',application_amount:order.amount,application_shares:'',source_sim_card_no:cards[i].simNumber,binding_version:String(cards[i].bindingVersion),accepted_business_time:date+'T14:00:00',source_type:'ORDER',source_id:String(order.id)})
+        const regenerateResponse=admin.waitForResponse(r=>r.url().endsWith('/api/admin/application-exports/'+exportTask.exportId+'/regenerate')&&r.request().method()==='POST')
+        await exportRow.getByRole('button',{name:'重导同一快照',exact:true}).click();const regenerated=await regenerateResponse;expect(regenerated.status()).toBe(202)
+        const regenerationTask=await regenerated.json();expect(regenerationTask.exportId).toBe(exportTask.exportId);expect(regenerationTask.runId).not.toBe(exportTask.runId);await waitRun(regenerationTask.runId)
+        await admin.getByRole('button',{name:'申请文件',exact:true}).click()
+        await admin.getByRole('button',{name:'刷新文件状态',exact:true}).click()
+        const secondExport=await get(admin,'/admin/application-exports/'+exportTask.exportId),secondFile=await download('applications-regenerated.csv')
+        expect(secondExport.snapshotVersion).toBe(firstExport.snapshotVersion);expect(secondExport.checksum).toBe(checksum);expect(secondFile.equals(firstFile)).toBe(true)
+        evidence.export={firstExport,secondExport,checksum,bytes:firstFile.length,headers,fileRows};await shot(admin,'06-same-snapshot-regeneration')
+        await blockedInvestor.goto('/');await loaded(blockedInvestor)
+        await blockedInvestor.locator('tbody tr').filter({hasText:blockedFund.name}).getByRole('button',{name:'赎回',exact:true}).click()
+        dialog=blockedInvestor.getByRole('dialog');await dialog.getByLabel('赎回份额（份，最多四位小数）').fill('900.0000')
+        await dialog.getByRole('button',{name:'预估费用与份额'}).click();await expect(dialog.locator('.trade-summary')).toBeVisible();await dialog.getByRole('button',{name:'确认提交申请'}).click();await expect(dialog).not.toBeVisible()
+        const blockedBefore=await get(blockedInvestor,'/portfolio'),blockedPreview=await revision(blockedFund.id,date)
+        expect(blockedPreview.state).toBe('BLOCKED');expect(blockedPreview.blockers.some((b:any)=>b.reason.includes('不足'))).toBe(true)
+        await expect(admin.getByRole('button',{name:'确认执行重新清算',exact:true})).toBeDisabled();expect(await get(blockedInvestor,'/portfolio')).toEqual(blockedBefore)
+        await post(admin,'/admin/reclearing/runs',{previewId:blockedPreview.previewId,scopeVersion:blockedPreview.scopeVersion,requestKey:'blocked-run-'+stamp},409)
+        evidence.blocked={username:blockedUsername,fundId:blockedFund.id,preview:blockedPreview,unchangedPortfolio:blockedBefore};await shot(admin,'07-insufficient-shares-blocked')
+        // Release only this fixture's unconfirmed redemption after retaining the blocked evidence.
+        const blockedRedemption=(await get(blockedInvestor,'/orders')).find((o:any)=>o.fundClassId===blockedFund.id&&o.type==='REDEMPTION'&&o.status==='SUBMITTED')
+        await blockedInvestor.goto('/orders');await loaded(blockedInvestor)
+        await blockedInvestor.locator('tbody tr').filter({hasText:blockedRedemption.applicationNo}).getByRole('button',{name:'撤单',exact:true}).click()
+        await blockedInvestor.locator('.el-message-box').getByRole('button',{name:'申请撤单',exact:true}).click()
+        await expect.poll(async()=>(await get(blockedInvestor,'/orders/'+blockedRedemption.id)).status).toBe('CANCELLED')
+        evidence.blocked.cancelledFixtureRedemption=await get(blockedInvestor,'/orders/'+blockedRedemption.id)
+        const operatorName='co'+stamp;await post(admin,'/admin/users',{username:operatorName,password,displayName:'清算操作员 '+stamp,role:'OPERATOR'})
+        await signIn(operator,operatorName,password);await operator.getByLabel('当前密码').fill(password);await operator.getByLabel('新密码').fill('Qaoperator98765!');await operator.getByRole('button',{name:'更新密码',exact:true}).click()
+        await expect.poll(async()=>(await get(operator,'/me')).mustChangePassword).toBe(false)
+        await operator.goto('/admin/products');await loaded(operator);await expect(operator.getByRole('button',{name:'净值修订',exact:true})).toHaveCount(0)
+        await operator.goto('/admin/trading');await loaded(operator);await expect(operator.getByRole('button',{name:'重新清算',exact:true})).toHaveCount(0)
+        await operator.getByRole('button',{name:'申请文件',exact:true}).click();await expect(operator.locator('tbody tr').filter({hasText:checksum})).toHaveCount(1);await shot(operator,'08-operator-role-visible-files')
+        await expect(page.locator('.sidebar nav').getByRole('link',{name:'交易与任务',exact:true})).toHaveCount(0)
+        expect((await operator.request.get('/api/admin/application-exports/'+exportTask.exportId+'/download')).status()).toBe(200)
+        const denied=[]
+        for(const target of [operator,page])for(const path of ['/admin/nav-revisions','/admin/reclearing/previews','/admin/reclearing/runs']){
+          const result=await post(target,path,{fundClassId:fund.id,marketDate:date,nav:'1.25',reason:'禁止越权',requestKey:'denied-'+stamp,revisionSetId:preview.revisionSetId,previewId:preview.previewId,scopeVersion:preview.scopeVersion},403)
+          denied.push({role:target===operator?'OPERATOR':'INVESTOR',path,code:result.code,status:403})
+        }
+        for(const path of ['/admin/application-exports','/admin/application-exports/'+exportTask.exportId+'/download']){expect((await page.request.get('/api'+path)).status()).toBe(403);denied.push({role:'INVESTOR',path,status:403})}
+        expect((await blockedInvestor.request.get('/api/orders/'+applications[0].id+'/confirmations')).status()).toBe(404)
+        evidence.permissions=denied;expect(failures).toEqual([]);expect(adminFailures).toEqual([]);evidence.status='PASSED'
+      } catch(error) {workflowError=error;evidence.status='FAILED';evidence.error=String(error);throw error} finally {
+        await mkdir(testInfo.outputDir,{recursive:true});await writeFile(testInfo.outputPath('clearing-evidence.json'),JSON.stringify(evidence,null,2))
+        let restoreError:unknown
+        try {if(originalClock){await post(admin,'/admin/clock',{dateTime:originalClock.dateTime});evidence.restoredClock=(await get(admin,'/admin/clock')).dateTime;expect(evidence.restoredClock).toBe(originalClock.dateTime)}} catch(error) {restoreError=error;evidence.clockRestoreError=String(error)}
+        await writeFile(testInfo.outputPath('clearing-evidence.json'),JSON.stringify(evidence,null,2))
+        await operatorContext.close();await blockContext.close();await adminContext.close()
+        if(restoreError&&!workflowError)throw restoreError
+      }
+    })
   })
 })

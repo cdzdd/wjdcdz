@@ -12,24 +12,27 @@ import static com.hengsheng.fund.AdvancedSupport.*;
 @Service
 class OfferingService {
     private final AdvancedSupport s;
-    OfferingService(AdvancedSupport s) { this.s=s; }
+    private final BusinessNumberService numbers;
+    private final ConfirmationService confirmations;
+    private final TradingDayGate days;
+    OfferingService(AdvancedSupport s,BusinessNumberService numbers,ConfirmationService confirmations,TradingDayGate days) { this.s=s;this.numbers=numbers;this.confirmations=confirmations;this.days=days; }
 
-    @Transactional
     Map<String,Object> subscribe(long userId, Map<String,Object> input) {
+        var prior=s.db.rows("SELECT * FROM orders WHERE user_id=? AND request_key=?",userId,text(input,"requestKey"));if(!prior.isEmpty())return retry(prior.getFirst(),input);
+        long fid=id(input,"fundClassId");var rule=s.db.one("SELECT cutoff_time FROM fund_classes WHERE id=?",fid);LocalDate day=s.openDate(s.now().toLocalDate());if(day.equals(s.now().toLocalDate())&&!s.now().toLocalTime().isBefore(java.time.LocalTime.parse(rule.get("cutoffTime").toString())))day=s.nextOpen(day,1);
+        days.prepare(day);LocalDate admittedDate=day;return s.tx(()->subscribeTransaction(userId,input,admittedDate));
+    }
+    private Map<String,Object> subscribeTransaction(long userId,Map<String,Object> input,LocalDate admission) {
         String key=text(input,"requestKey"),fingerprint=TradeService.fingerprint(input);
         long aid=id(input,"tradingAccountId"),fid=id(input,"fundClassId");
+        var known=s.db.rows("SELECT * FROM orders WHERE user_id=? AND request_key=?",userId,key);if(!known.isEmpty())return retry(known.getFirst(),input);
+        days.enter(admission);
+        s.accounts.lockAccount(userId,aid);
         s.db.one("SELECT id FROM fund_classes WHERE id=? FOR UPDATE",fid);
         s.db.one("SELECT id FROM users WHERE id=? FOR UPDATE",userId);
         var old=s.db.rows("SELECT * FROM orders WHERE user_id=? AND request_key=?",userId,key);
         if(!old.isEmpty()) {
-            var order=old.getFirst();
-            String stored=String.valueOf(order.get("requestFingerprint"));
-            if(!"OFFERING".equals(order.get("type")) || aid!=id(order,"tradingAccountId") || fid!=id(order,"fundClassId")
-                    || amount(input,"amount",2).compareTo(decimal(order.get("amount")))!=0
-                    || id(input,"bankCardId")!=id(order,"sourceCardId") || id(input,"bindingVersion")!=id(order,"bindingVersion")
-                    || (stored.length()==64 && !stored.equals(fingerprint)))
-                throw new IllegalArgumentException("重复请求键与原认购不一致");
-            return order;
+            return retry(old.getFirst(),input);
         }
         if(!s.db.rows("SELECT id FROM offering_events WHERE fund_class_id=?",fid).isEmpty()) throw ApiException.conflict("募集结果已固定，不再受理新认购");
         var account=s.account(userId,aid,true); s.validateCard(input,account);
@@ -42,13 +45,21 @@ class OfferingService {
         if(!tiers.isEmpty()) { purchaseRate=decimal(tiers.getFirst().get("rate"));if(tiers.getFirst().get("fixedFee")!=null) fixedFee=decimal(tiers.getFirst().get("fixedFee")); }
         FundMath.purchase(value,purchaseRate,fixedFee,BigDecimal.ONE);
         long fa=s.accounts.linkFundAccount(userId,aid,fid);
-        LocalDate day=s.openDate(s.now().toLocalDate());
+        LocalDate day=admission;
         long order=s.db.insert("INSERT INTO orders(order_no,user_id,type,fund_class_id,trading_account_id,source_card_id,binding_version,fund_account_id,amount,application_date,confirmation_date,payment_date,request_key,request_fingerprint,purchase_rate,redemption_rate,fixed_fee,risk_level,rule_version,cutoff_time,created_at) VALUES(?,?,'OFFERING',?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?,?)",
                 "OF"+UUID.randomUUID().toString().substring(0,16),userId,fid,aid,id(account,"bankCardId"),id(account,"bindingVersion"),fa,value,day,day,day,key,fingerprint,purchaseRate,decimal(fund.get("redemptionRate")),fixedFee,id(fund,"riskLevel"),id(fund,"ruleVersion"),fund.get("cutoffTime"),s.now());
+        String applicationNumber=numbers.next("APPLICATION",day);
+        s.db.update("UPDATE orders SET application_no=? WHERE id=?",applicationNumber,order);
+        numbers.bind("APPLICATION",applicationNumber,"ORDER",order,0);
         s.debit(userId,aid,value,"OFFERING",Long.toString(order));
         s.db.insert("INSERT INTO offering_orders(order_id,user_id,trading_account_id,fund_class_id,source_card_id,created_at) VALUES(?,?,?,?,?,?)",order,userId,aid,fid,id(account,"bankCardId"),s.now());
         s.changed("SUBSCRIBE","ORDER",order,"新基金模拟认购");
         return s.db.one("SELECT * FROM orders WHERE id=?",order);
+    }
+    private Map<String,Object> retry(Map<String,Object> order,Map<String,Object> input){
+        String stored=String.valueOf(order.get("requestFingerprint"));
+        if(!"OFFERING".equals(order.get("type"))||id(input,"tradingAccountId")!=id(order,"tradingAccountId")||id(input,"fundClassId")!=id(order,"fundClassId")||amount(input,"amount",2).compareTo(decimal(order.get("amount")))!=0||id(input,"bankCardId")!=id(order,"sourceCardId")||id(input,"bindingVersion")!=id(order,"bindingVersion")||(stored.length()==64&&!stored.equals(TradeService.fingerprint(input))))throw ApiException.conflict("重复请求键与原认购不一致");
+        return order;
     }
 
     Map<String,Object> finalizeOffering(long fundId,Map<String,Object> input) {
@@ -59,6 +70,7 @@ class OfferingService {
         BigDecimal nav=amount(input,"initialNav",6);
         BigDecimal rate=decimal(input.getOrDefault("interestRate","0"));
         if(rate.signum()<0 || rate.compareTo(BigDecimal.ONE)>0 || rate.scale()>8) throw new IllegalArgumentException("模拟利率应介于0和1且最多八位小数");
+        if(!s.openDate(s.now().toLocalDate()).equals(s.now().toLocalDate()))return Map.of("processed",0,"waiting",1,"failed",0,"details",java.util.List.of("募集确认等待开放工作日"));
         var registered=s.tx(()-> {
             var fund=s.db.one("SELECT * FROM fund_classes WHERE id=? FOR UPDATE",fundId);
             var old=s.db.rows("SELECT * FROM offering_events WHERE fund_class_id=?",fundId);
@@ -78,9 +90,10 @@ class OfferingService {
         if("COMPLETED".equals(registered.get("status"))) return Map.of("processed",0,"waiting",0,"failed",0);
         long event=id(registered,"id");
         int count=0;
-        for(var row:s.db.rows("SELECT o.* FROM orders o JOIN offering_orders f ON f.order_id=o.id WHERE f.fund_class_id=? AND f.status='SUBMITTED' ORDER BY o.id",fundId)) {
+        long cursor=0;while(true){var page=s.db.rows("SELECT o.id FROM orders o JOIN offering_orders f ON f.order_id=o.id WHERE f.fund_class_id=? AND f.status='SUBMITTED' AND o.id>? ORDER BY o.id LIMIT 200",fundId,cursor);if(page.isEmpty())break;
+        for(var row:page) {cursor=id(row,"id");
             if(s.tx(()->finishOne(id(row,"id"),outcome,end,nav,rate))) count++;
-        }
+        }}
         s.tx(()-> {
             s.db.update("UPDATE offering_events SET status='COMPLETED' WHERE id=?",event);
             s.db.update("UPDATE fund_classes SET state=?,purchase_open=FALSE,redemption_open=FALSE WHERE id=? AND state='RAISING'",outcome.equals("ESTABLISHED")?"BUILDING":"FAILED",fundId);
@@ -95,6 +108,7 @@ class OfferingService {
     }
 
     private boolean finishOne(long orderId,String outcome,LocalDate end,BigDecimal nav,BigDecimal rate) {
+        var owner=s.db.one("SELECT user_id,trading_account_id FROM orders WHERE id=?",orderId);s.accounts.lockAccount(id(owner,"userId"),id(owner,"tradingAccountId"));
         var order=s.db.one("SELECT * FROM orders WHERE id=? FOR UPDATE",orderId);
         var offering=s.db.one("SELECT * FROM offering_orders WHERE order_id=? FOR UPDATE",orderId);
         if(!"SUBMITTED".equals(offering.get("status"))) return false;
@@ -114,6 +128,7 @@ class OfferingService {
             s.db.update("UPDATE orders SET status='CONFIRMED',net_amount=?,reason='募集失败，等待原路退款',planned_confirmation_date=?,confirmation_date=?,confirmed_at=?,payment_date=? WHERE id=?",value.add(interest),end,actualDay,s.now(),actualDay,orderId);
             s.db.update("UPDATE offering_orders SET status='REFUND_PENDING',interest=? WHERE order_id=?",interest,orderId);
         }
+        confirmations.record("ORDER",orderId,ClearingExecutionContext.currentRunId(),s.openDate(ClearingExecutionContext.businessTime()==null?actualDay:ClearingExecutionContext.businessTime().toLocalDate()),actualDay,s.db.one("SELECT * FROM orders WHERE id=?",orderId));
         s.accounts.notifyUser(id(order,"userId"),"OFFERING",Long.toString(orderId),"募集结果通知",outcome.equals("ESTABLISHED")?"认购份额已确认":"募集失败，退款保持原账户来源");
         return true;
     }

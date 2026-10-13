@@ -25,12 +25,15 @@ class MoneyLifecycleIntegrationTest {
     @Autowired TradeService trades;
     @Autowired MoneyIncomeService money;
     @Autowired LifecycleService lifecycle;
+    @Autowired FundService funds;
+    @Autowired ConversionService conversions;
     long user, fund, cardA, cardB, accountA, accountB, fundAccount;
     String key;
+    @org.springframework.test.context.transaction.BeforeTransaction void prepareApplicationDay(){db.update("INSERT IGNORE INTO application_days(business_date,state) VALUES('2026-10-14','OPEN')");}
 
     @BeforeEach void fixture() {
         assertThat(db.jdbc.getDataSource()).isNotNull();
-        assertThat(db.scalar("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID=CONNECTION_ID() AND DB='fund_sim_test'")).isEqualByComparingTo("1");
+        assertThat(db.scalar("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID=CONNECTION_ID() AND DB IN('fund_sim_test','fund_sim_upgrade_test')")).isEqualByComparingTo("1");
         SecurityContextHolder.getContext().setAuthentication(new TestingAuthenticationToken("admin","", "ROLE_ADMIN"));
         db.update("UPDATE app_settings SET value='2026-10-14T10:00:00' WHERE name='demo_clock'");
         key=UUID.randomUUID().toString().replace("-","").substring(0,20);
@@ -40,6 +43,9 @@ class MoneyLifecycleIntegrationTest {
         fundAccount=accounts.linkFundAccount(user,accountA,fund);accounts.linkFundAccount(user,accountB,fund);
     }
     @AfterEach void clearAuthentication(){SecurityContextHolder.clearContext();}
+    @Test void moneyNavCannotBePublishedAwayFromOne(){
+        assertThatThrownBy(()->funds.saveNav(Map.of("fundClassId",fund,"date","2026-10-13","nav","1.250000"))).isInstanceOf(ApiException.class).hasMessageContaining("固定为1");
+    }
     long card(String name){return db.insert("INSERT INTO bank_cards(user_id,bank_name,sim_number,holder_name,request_key) VALUES(?,'模拟银行',?,'收益测试',?)",user,"SIM-"+key+name,key+name);}
     long account(long card,String name){long id=db.insert("INSERT INTO trading_accounts(user_id,account_no,bank_card_id) VALUES(?,?,?)",user,"ML-"+key+name,card);db.update("INSERT INTO wallets(trading_account_id) VALUES(?)",id);db.update("INSERT INTO card_bindings(trading_account_id,bank_card_id,binding_version) VALUES(?,?,1)",id,card);return id;}
     long lot(long account,long card,String shares,LocalDate date){return trades.addLot(user,account,fund,card,fundAccount,new BigDecimal(shares),new BigDecimal(shares),date,"TEST_LOT",key+account);}

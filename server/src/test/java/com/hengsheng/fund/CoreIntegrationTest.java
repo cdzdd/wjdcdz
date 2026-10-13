@@ -29,7 +29,17 @@ class CoreIntegrationTest {
             var b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+env.getProperty("local.server.port")+path));
             b.header("Content-Type","application/json");
             if (!token.isEmpty()) b.header("X-CSRF-TOKEN",token);
-            return http.send(b.method(method,body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build(),HttpResponse.BodyHandlers.ofString());
+            var response=http.send(b.method(method,body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build(),HttpResponse.BodyHandlers.ofString());
+            if(response.statusCode()==202){
+                long id=Db.id(map(response).get("runId"));long deadline=System.nanoTime()+60_000_000_000L;
+                while(System.nanoTime()<deadline){
+                    var poll=call("GET","/api/admin/clearing-runs/"+id,null);var row=map(poll);
+                    if(!java.util.Set.of("QUEUED","RUNNING").contains(row.get("state"))){assertThat(row.get("state")).as(row.toString()).isNotIn("FAILED","REJECTED_QUEUE_FULL");return poll;}
+                    Thread.sleep(30);
+                }
+                throw new AssertionError("清算任务超时："+id);
+            }
+            return response;
         }
         Map<String,Object> map(HttpResponse<String> r) { return json.readValue(r.body(),Map.class); }
         void csrf() throws Exception { var r=call("GET","/api/auth/csrf",null);assertThat(r.statusCode()).isEqualTo(200);token=map(r).get("token").toString(); }

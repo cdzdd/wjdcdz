@@ -10,7 +10,8 @@ import org.springframework.transaction.annotation.Isolation;
 @Service
 public class FundService {
     private final Db db;private final AccountService account;
-    public FundService(Db db,AccountService account){this.db=db;this.account=account;}
+    private final org.springframework.transaction.support.TransactionTemplate transactions;
+    public FundService(Db db,AccountService account,org.springframework.transaction.PlatformTransactionManager manager){this.db=db;this.account=account;this.transactions=new org.springframework.transaction.support.TransactionTemplate(manager);}
     public List<Map<String,Object>> funds() {return db.rows("SELECT f.*,COALESCE((SELECT n.nav FROM nav_records n WHERE n.fund_class_id=f.id AND n.published=TRUE AND n.date<=? ORDER BY n.date DESC LIMIT 1),IF(f.type='MONEY',1,NULL)) nav,(SELECT n.date FROM nav_records n WHERE n.fund_class_id=f.id AND n.published=TRUE AND n.date<=? ORDER BY n.date DESC LIMIT 1) nav_date FROM fund_classes f ORDER BY f.id",account.clock().toLocalDate(),account.clock().toLocalDate());}
     public Map<String,Object> fund(long id) {var f=funds().stream().filter(v->Db.id(v.get("id"))==id).findFirst().orElseThrow(ApiException::missing);f.put("feeTiers",db.rows("SELECT min_amount,rate,fixed_fee FROM fee_tiers WHERE fund_class_id=? ORDER BY min_amount",id));return f;}
     public LocalDate applicationDate(long fid,LocalDateTime time) {
@@ -35,7 +36,7 @@ public class FundService {
         if(oldState!=null&&Set.of("TERMINATED","LIQUIDATED","FAILED").contains(oldState)&&!oldState.equals(state))throw ApiException.conflict("基金终态不能通过普通编辑恢复");
         if(Set.of("TERMINATED","LIQUIDATED","FAILED").contains(state)&&!state.equals(oldState))throw ApiException.conflict("请使用募集结束、终止或清盘专用接口");
         if(oldState!=null&&!state.equals(oldState)&&!(oldState.equals("DRAFT")&&state.equals("RAISING"))&&!(oldState.equals("BUILDING")&&state.equals("OPEN")))throw ApiException.conflict("该状态变更须通过募集或终止等专用业务接口");
-        if(id!=null&&(!type.equals(original.get("type"))||!manager.equals(original.get("manager"))||Db.id(f.get("registrarId"))!=Db.id(original.get("registrarId")))&&hasBusinessHistory(id))throw ApiException.conflict("产品已有业务历史，不能修改类型、登记机构或管理人");
+        if(id!=null&&(!code.equals(original.get("code"))||!type.equals(original.get("type"))||!manager.equals(original.get("manager"))||Db.id(f.get("registrarId"))!=Db.id(original.get("registrarId")))&&hasBusinessHistory(id))throw ApiException.conflict("产品已有业务历史，不能修改代码、类型、登记机构或管理人");
         int risk=Integer.parseInt(Db.text(f,"riskLevel"));if(risk<1||risk>5)throw ApiException.bad("风险等级须为1至5");
         BigDecimal pr=Db.decimal(f.getOrDefault("purchaseRate","0")),rr=Db.decimal(f.getOrDefault("redemptionRate","0"));if(pr.signum()<0||rr.signum()<0||pr.compareTo(BigDecimal.ONE)>0||rr.compareTo(BigDecimal.ONE)>0)throw ApiException.bad("费率须在0至1之间");
         BigDecimal minPurchase=Db.decimal(f.getOrDefault("minPurchase","10")),minRedemption=Db.decimal(f.getOrDefault("minRedemption","1"));if(minPurchase.signum()<=0||minPurchase.scale()>2||minRedemption.signum()<=0||minRedemption.scale()>4)throw ApiException.bad("最低申购金额与最低赎回份额须为精度合法的正数");
@@ -58,7 +59,7 @@ public class FundService {
         """,fid,fid,fid,fid,fid,fid,fid,fid,fid,fid,fid).signum()>0;}
     @Transactional public Map<String,Object> saveNav(Map<String,Object> in) {
         account.requireRole("OPERATOR");long fid=Db.id(in.get("fundClassId"));LocalDate date=LocalDate.parse(Db.text(in,"date"));BigDecimal nav=Db.positive(in,"nav",6);
-        db.one("SELECT id FROM fund_classes WHERE id=?",fid);
+        var product=db.one("SELECT id,type FROM fund_classes WHERE id=?",fid);if("MONEY".equals(product.get("type"))&&nav.compareTo(BigDecimal.ONE)!=0)throw ApiException.bad("货币基金净值固定为1，请通过万份收益登记收益变化");
         var cal=db.one("SELECT open FROM trading_calendar WHERE date=?",date);if(!Db.yes(cal.get("open")))throw ApiException.bad("净值只能属于开放日");
         if(account.clock().isBefore(date.atTime(15,10)))throw ApiException.conflict("净值最早在所属开放日15:10发布");
         var old=db.rows("SELECT id,used,published FROM nav_records WHERE fund_class_id=? AND date=? FOR UPDATE",fid,date);
@@ -66,24 +67,36 @@ public class FundService {
         if(old.isEmpty())db.insert("INSERT INTO nav_records(fund_class_id,date,nav,published) VALUES(?,?,?,TRUE)",fid,date,nav);else db.update("UPDATE nav_records SET nav=?,published=TRUE WHERE id=?",nav,old.getFirst().get("id"));
         account.audit("NAV_PUBLISH","FUND",fid,date.toString());return db.one("SELECT * FROM nav_records WHERE fund_class_id=? AND date=?",fid,date);
     }
-    @Transactional public int market(LocalDate date) {
-        int n=0;LocalDate today=account.clock().toLocalDate();LocalDate end=date.isBefore(today)?date:today;
-        for(var cal:db.rows("SELECT date FROM trading_calendar WHERE open=TRUE AND date<=? ORDER BY date",end)){
-            LocalDate d=LocalDate.parse(cal.get("date").toString());if(account.clock().isBefore(d.atTime(15,10)))continue;
-            for(var f:db.rows("""
-                SELECT f.id,f.code,f.type FROM fund_classes f WHERE f.state='OPEN'
-                  OR (f.state='TERMINATED' AND DATE(f.terminated_at)>=?
-                    AND (EXISTS(SELECT 1 FROM orders o WHERE o.fund_class_id=f.id AND o.status='SUBMITTED' AND o.application_date=?)
-                      OR EXISTS(SELECT 1 FROM conversions c WHERE (c.source_class_id=f.id OR c.target_class_id=f.id) AND c.status='SUBMITTED' AND c.application_date=?)))
-                ORDER BY f.id FOR UPDATE
-                """,d,d,d)){
-                if(db.scalar("SELECT COUNT(*) FROM nav_records WHERE fund_class_id=? AND date=?",f.get("id"),d).signum()>0)continue;
-                long fid=Db.id(f.get("id"));BigDecimal price="MONEY".equals(f.get("type"))?new BigDecimal("1.000000"):new BigDecimal("1.0").add(new BigDecimal(Math.floorMod(Objects.hash(f.get("code"),d),2500)).movePointLeft(4)).setScale(6);
-                if(!"MONEY".equals(f.get("type")))price=price.subtract(db.scalar("SELECT COALESCE(SUM(per_share),0) FROM dividend_events WHERE fund_class_id=? AND ex_date<=?",fid,d));
-                if(price.signum()<=0)throw ApiException.conflict("模拟除息净值非正，请管理员检查分红参数");
-                // Every generated price is stored once; restart cannot revise it.
-                n+=db.update("INSERT IGNORE INTO nav_records(fund_class_id,date,nav,published) VALUES(?,?,?,TRUE)",fid,d,price);
+    public Map<String,Object> market(LocalDate date) {
+        int added=0,failed=0;var details=new ArrayList<String>();LocalDate today=account.clock().toLocalDate(),end=date.isBefore(today)?date:today;
+        LocalDate dateCursor=LocalDate.of(1000,1,1);
+        while(true){
+            var days=db.rows("SELECT date FROM trading_calendar WHERE open=TRUE AND date>? AND date<=? ORDER BY date LIMIT 200",dateCursor,end);
+            if(days.isEmpty())break;
+            for(var cal:days){
+                LocalDate day=LocalDate.parse(cal.get("date").toString());dateCursor=day;
+                if(account.clock().isBefore(day.atTime(15,10)))continue;
+                long cursor=0;
+                while(true){
+                    var candidates=db.rows("SELECT f.id FROM fund_classes f WHERE f.id>? AND "+marketEligibility()+" ORDER BY f.id LIMIT 200",cursor,day,day,day);
+                    if(candidates.isEmpty())break;
+                    for(var candidate:candidates){
+                        long fid=Db.id(candidate.get("id"));cursor=fid;
+                        try{added+=transactions.execute(status->marketOne(fid,day));}
+                        catch(RuntimeException ex){failed++;details.add("行情产品"+fid+"/"+day+"："+Objects.requireNonNullElse(ex.getMessage(),ex.getClass().getSimpleName()));}
+                    }
+                }
             }
-        }return n;
+        }
+        return Map.of("processed",added,"waiting",0,"failed",failed,"details",details);
+    }
+    private String marketEligibility(){return "(f.state='OPEN' OR (f.state='TERMINATED' AND DATE(f.terminated_at)>=? AND (EXISTS(SELECT 1 FROM orders o WHERE o.fund_class_id=f.id AND o.status='SUBMITTED' AND o.application_date=?) OR EXISTS(SELECT 1 FROM conversions c WHERE (c.source_class_id=f.id OR c.target_class_id=f.id) AND c.status='SUBMITTED' AND c.application_date=?))))";}
+    private int marketOne(long fid,LocalDate day){
+        var rows=db.rows("SELECT f.id,f.code,f.type FROM fund_classes f WHERE f.id=? AND "+marketEligibility()+" FOR UPDATE",fid,day,day,day);
+        if(rows.isEmpty()||db.scalar("SELECT COUNT(*) FROM nav_records WHERE fund_class_id=? AND date=?",fid,day).signum()>0)return 0;
+        var fund=rows.getFirst();BigDecimal price="MONEY".equals(fund.get("type"))?new BigDecimal("1.000000"):new BigDecimal("1.0").add(new BigDecimal(Math.floorMod(Objects.hash(fund.get("code"),day),2500)).movePointLeft(4)).setScale(6);
+        if(!"MONEY".equals(fund.get("type")))price=price.subtract(db.scalar("SELECT COALESCE(SUM(per_share),0) FROM dividend_events WHERE fund_class_id=? AND ex_date<=?",fid,day));
+        if(price.signum()<=0)throw ApiException.conflict("模拟除息净值非正，请管理员检查分红参数");
+        return db.update("INSERT IGNORE INTO nav_records(fund_class_id,date,nav,published) VALUES(?,?,?,TRUE)",fid,day,price);
     }
 }

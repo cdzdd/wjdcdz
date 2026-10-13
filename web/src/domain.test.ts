@@ -56,3 +56,10 @@ describe('任务批次结果', () => {
     expect(jobOutcome({ processed: 4, waiting: 0, failed: 0 })).toBe('COMPLETED')
   })
 })
+
+describe('持久清算任务状态', () => {
+  it('排队、运行和拒绝不会被零计数误判为空任务', () => {
+    for (const state of ['QUEUED','RUNNING','REJECTED_QUEUE_FULL','INTERRUPTED','FAILED','WAITING']) expect(jobOutcome({state,processed:0,waiting:0,failed:0})).toBe(state)
+    expect(jobOutcome({state:'COMPLETED',processed:0,waiting:0,failed:0})).toBe('COMPLETED')
+  })
+})

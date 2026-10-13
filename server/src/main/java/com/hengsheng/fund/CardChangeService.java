@@ -29,7 +29,7 @@ public class CardChangeService {
         long old=Db.id(r.get("oldCardId")),next=Db.id(r.get("newCardId")),version=Db.id(a.get("bindingVersion"))+1;
         db.update("UPDATE bank_cards SET status='REPLACED' WHERE id=?",old);db.update("UPDATE bank_cards SET status='ACTIVE' WHERE id=?",next);db.update("UPDATE trading_accounts SET bank_card_id=?,binding_version=?,debit_frozen=FALSE WHERE id=?",next,version,tid);
         db.update("INSERT INTO card_bindings(trading_account_id,bank_card_id,binding_version,change_request_id,created_at) VALUES(?,?,?,?,?)",tid,next,version,rid,account.clock());
-        for(var p:db.rows("SELECT * FROM payouts WHERE trading_account_id=? AND status!='PAID' FOR UPDATE",tid)){
+        for(var p:db.rows("SELECT * FROM payouts WHERE trading_account_id=? AND status IN('PENDING','BLOCKED') FOR UPDATE",tid)){
             db.update("INSERT INTO payout_route_changes(payout_id,old_card_id,new_card_id,authorization_id,reason,created_at) VALUES(?,?,?,?,?,?)",p.get("id"),p.get("targetCardId"),next,rid,reason,account.clock());
             db.update("UPDATE payouts SET target_card_id=?,target_binding_version=?,authorization_id=?,status='PENDING',reason=NULL WHERE id=?",next,version,rid,p.get("id"));
         }

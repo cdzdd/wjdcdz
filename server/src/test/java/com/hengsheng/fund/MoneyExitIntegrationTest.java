@@ -26,7 +26,7 @@ class MoneyExitIntegrationTest {
     long user,fund,account,card,lot;
     String key;
     @BeforeEach void fixture() {
-        assertThat(db.scalar("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID=CONNECTION_ID() AND DB='fund_sim_test'")).isEqualByComparingTo("1");
+        assertThat(db.scalar("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID=CONNECTION_ID() AND DB IN('fund_sim_test','fund_sim_upgrade_test')")).isEqualByComparingTo("1");
         key=UUID.randomUUID().toString().replace("-","").substring(0,18);admin();clock("2026-10-12T14:00:00");
         user=db.insert("INSERT INTO users(username,password_hash,display_name,opened,risk_level,risk_expires_at) VALUES(?,'unused','清户测试',TRUE,5,'2027-10-12')","mx"+key);
         fund=db.insert("INSERT INTO fund_classes(code,name,type,manager,registrar_id,risk_level,confirmation_days,payment_days) VALUES(?,'末期收益测试','MONEY','模拟管理人',1,1,1,1)","MX"+key);
