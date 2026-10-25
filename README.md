@@ -120,6 +120,8 @@ Pop-Location
 
 ## Linux Docker Compose 部署
 
+2026年10月25日的阿里云公网试部署、运行状态与管理方式见[云端部署记录](docs/deployment.md)。
+
 服务器需要 Docker Engine 与 Compose v2。将代码部署到 Linux 后，在项目根目录执行：
 
 ```sh
