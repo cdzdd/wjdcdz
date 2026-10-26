@@ -35,6 +35,8 @@ services:
       SERVER_ADDRESS: 0.0.0.0
       SERVER_PORT: 8080
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-SESSION}
+      FORWARD_HEADERS_STRATEGY: ${FORWARD_HEADERS_STRATEGY:-NONE}
       FUND_EXPORTS_DIRECTORY: /data/ta-exports
       JAVA_TOOL_OPTIONS: -Xms256m -Xmx512m -XX:+UnlockExperimentalVMOptions -XX:G1MaxNewSizePercent=10
       TZ: Asia/Shanghai
