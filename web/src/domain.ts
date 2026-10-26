@@ -59,5 +59,13 @@ export function cell(value: unknown, kind?: Column['kind']): string {
   if (kind === 'date') return value ? String(value).replace('T', ' ').slice(0, 19) : '—'
   return typeof value === 'object' && value !== null ? JSON.stringify(value) : label(value)
 }
-export function requestKey(): string { return crypto.randomUUID() }
+export function requestKey(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  // getRandomValues is available on HTTP as well as HTTPS.
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
 export const fundTypes = [{ value: 'STOCK', label: '股票型' }, { value: 'BOND', label: '债券型' }, { value: 'MIXED', label: '混合型' }, { value: 'MONEY', label: '货币型' }]

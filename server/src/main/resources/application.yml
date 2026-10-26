@@ -19,9 +19,12 @@ spring:
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${SERVER_PORT:8080}
+  forward-headers-strategy: ${FORWARD_HEADERS_STRATEGY:NONE}
   servlet:
     session:
       cookie:
+        name: ${SESSION_COOKIE_NAME:SESSION}
+        path: /
         http-only: true
         same-site: lax
         secure: ${COOKIE_SECURE:false}

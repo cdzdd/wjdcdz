@@ -8,6 +8,7 @@ RUN mvn -B -DskipTests package
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 RUN addgroup -S fund && adduser -S -G fund fund
+RUN mkdir -p /data/ta-exports && chown fund:fund /data/ta-exports
 COPY --from=build --chown=fund:fund /build/target/fund-simulation-1.0.0.jar /app/app.jar
 USER fund
 EXPOSE 8080

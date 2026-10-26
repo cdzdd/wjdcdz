@@ -1,5 +1,23 @@
-import { describe, expect, it } from 'vitest'
-import { buildOrderPayload, buildRedemptionGroup, decimal, jobOutcome, percent } from './domain'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { buildOrderPayload, buildRedemptionGroup, decimal, jobOutcome, percent, requestKey } from './domain'
+
+const nativeCrypto = globalThis.crypto
+afterEach(() => vi.unstubAllGlobals())
+
+describe('公网HTTP请求编号', () => {
+  it('安全环境保留浏览器原生UUID生成', () => {
+    const randomUUID = vi.fn(() => 'native-request-id')
+    vi.stubGlobal('crypto', { randomUUID })
+    expect(requestKey()).toBe('native-request-id')
+    expect(randomUUID).toHaveBeenCalledOnce()
+  })
+  it('HTTP环境缺少randomUUID时仍生成互不重复的UUIDv4', () => {
+    vi.stubGlobal('crypto', { getRandomValues: nativeCrypto.getRandomValues.bind(nativeCrypto) })
+    const keys = Array.from({ length: 1000 }, () => requestKey())
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(keys.every(key => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(key))).toBe(true)
+  })
+})
 
 describe('显式交易来源', () => {
   it('提交选定账户和卡版本，后续默认账户变化不能改写申请', () => {
