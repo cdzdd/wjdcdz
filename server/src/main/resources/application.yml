@@ -35,6 +35,10 @@ management:
         include: health
 fund:
   demo: false
+  assistant:
+    enabled: ${FUND_ASSISTANT_ENABLED:false}
+    base-url: ${FUND_ASSISTANT_BASE_URL:http://knowledge-qa-api:8000}
+    service-key: ${FUND_ASSISTANT_SERVICE_KEY:}
   exports:
     directory: ${FUND_EXPORTS_DIRECTORY:.runtime/ta-exports}
 ---

@@ -9,6 +9,7 @@ import Benefits from './pages/Benefits.vue'
 import Messages from './pages/Messages.vue'
 import Profile from './pages/Profile.vue'
 import Help from './pages/Help.vue'
+import Assistant from './pages/Assistant.vue'
 import Admin from './pages/Admin.vue'
 import { user } from './state'
 export const router = createRouter({
@@ -17,7 +18,7 @@ export const router = createRouter({
     { path: '/', component: Dashboard }, { path: '/market', component: Market }, { path: '/funds/:id', component: FundDetail },
     { path: '/accounts', component: Accounts }, { path: '/orders', component: Orders }, { path: '/plans', component: Plans },
     { path: '/benefits', component: Benefits }, { path: '/messages', component: Messages }, { path: '/profile', component: Profile },
-    { path: '/help', component: Help }, { path: '/admin/:section?', component: Admin }
+    { path: '/help', component: Help }, { path: '/assistant', component: Assistant }, { path: '/admin/:section?', component: Admin }
   ],
   scrollBehavior: () => ({ top: 0 })
 })
