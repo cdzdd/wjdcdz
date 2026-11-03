@@ -50,7 +50,7 @@ public class AssistantClient {
     public ResponseEntity<Map<String, Object>> status(long owner) {
         if (origin == null) return unavailable("disabled");
         try { return request(owner, "GET", "/status", null); }
-        catch (ApiException error) { return unavailable(error.status == 429 ? "busy" : "offline"); }
+        catch (ApiException error) { return unavailable(error.status == 429 ? "busy" : "unavailable"); }
     }
 
     private ResponseEntity<Map<String, Object>> unavailable(String reason) {

@@ -153,13 +153,25 @@ class AssistantBridgeTest {
         assertThat(calls.get()).isZero();
     }
 
-    @Test void offlineAssistantStillAllowsFundPortfolioAndReturnsUsefulStatus() throws Exception {
+    @Test void unreachableAssistantStillAllowsFundPortfolioAndReturnsUsefulStatus() throws Exception {
         upstream.stop(0);
         mvc.perform(get("/api/assistant/status").with(user("alice"))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.available").value(false)).andExpect(jsonPath("$.reason").value("offline"));
+                .andExpect(jsonPath("$.available").value(false)).andExpect(jsonPath("$.reason").value("unavailable"));
         mvc.perform(get("/api/assistant/conversations").with(user("alice"))).andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("ASSISTANT_OFFLINE"));
         mvc.perform(get("/api/portfolio").with(user("alice"))).andExpect(status().isOk()).andExpect(jsonPath("$.totalAssets").value("100000.00"));
+    }
+
+    @Test void nodeOfflineIsKeptDistinctFromServiceUnavailability() throws Exception {
+        handler.set(exchange -> respond(exchange, 200, "{\"available\":false,\"reason\":\"offline\",\"activeRequests\":0,\"capacity\":2,\"queueDepth\":0}"));
+        mvc.perform(get("/api/assistant/status").with(user("alice"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.reason").value("offline"));
+        handler.set(exchange -> respond(exchange, 503, "{}"));
+        mvc.perform(get("/api/assistant/status").with(user("alice"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.reason").value("unavailable"));
+        handler.set(exchange -> respond(exchange, 429, "{}"));
+        mvc.perform(get("/api/assistant/status").with(user("alice"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.reason").value("busy"));
     }
 
     @Test void rateLimitAndUpstreamCredentialFailuresAreMappedWithoutLeakingBody() {
