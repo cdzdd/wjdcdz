@@ -24,4 +24,8 @@ manifest 记录精确 `sourceCommit`、`sourceRepository`、逐文件 SHA256、`
 
 前端与自身 `/api` 继续同源，Nginx 配置由运维接入目录提供；镜像内不固化域名、Cookie口令或服务器 IP。私有验收与公网发布分开记录。正式域名/HTTPS接入时，复核整个代理链的真实协议，避免内层 HTTP 覆盖可信入口的 HTTPS 信息。
 
+内层 Nginx 仅透传外层提供的精确 `http` / `https` 协议值，缺失或其他值回退到当前连接协议；Host 保留端口。使用此能力的前提是 web 只绑定宿主机回环地址，外层为唯一远程入口，并覆盖或清除客户端传入的 `Forwarded`、`X-Forwarded-Proto/Host/Port/Prefix/For`。在该边界落实后，运维才将后端 `FORWARD_HEADERS_STRATEGY` 设为 `FRAMEWORK`，HTTPS 的 `COOKIE_SECURE` 设为 `true`；默认配置仍不信任这些头。
+
+业务仓库独立 Compose 的默认 web 映射是所有接口；不能原样采用该默认入口后开启 `FRAMEWORK`。本适配供 Ferrari Server 的回环入口使用，不替代外层访问控制、证书和真实 HTTPS/CSRF 验证，也不改变业务逻辑或数据库迁移。
+
 普通更新保留数据卷。回退应用镜像不回退数据库迁移；数据库变更须在运维发布流程中另行备份、评估和验证。
