@@ -1,2 +1,22 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><meta name="theme-color" content="#133d47"/><title>恒升 · 基金模拟平台</title></head><body><div id="app"></div><script type="module" src="/src/main.ts"></script></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <meta name="theme-color" content="#fff0f3"/>
+  <title>恒升 · 基金模拟平台</title>
+  <style>
+    body{margin:0;background:#fff9fa}
+    .initial-boot{min-height:100vh;min-height:100svh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;background:radial-gradient(ellipse at 32% 30%,#f8dce5,transparent 48%),#fffafa;color:#7f646e;font:13px "Microsoft YaHei",system-ui,sans-serif}
+    .initial-boot__mark{position:relative;display:grid;place-items:center;width:86px;height:86px;color:#923b50;font-size:32px}
+    .initial-boot__mark:before{content:"";position:absolute;inset:0;border:1px solid #edc8d6;border-top-color:#b3485f;border-radius:50%;animation:initial-orbit 2s linear infinite}
+    @keyframes initial-orbit{to{transform:rotate(360deg)}}
+    @media(prefers-reduced-motion:reduce){.initial-boot__mark:before{animation:none}}
+  </style>
+</head>
+<body>
+  <div id="app"><div class="initial-boot" role="status"><span class="initial-boot__mark" aria-hidden="true">恒</span><span>正在载入基金模拟平台…</span></div></div>
+  <noscript>请启用浏览器 JavaScript 以使用基金模拟平台。</noscript>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
