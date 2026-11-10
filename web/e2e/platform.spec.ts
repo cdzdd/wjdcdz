@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 test('登录入口可键盘操作，表单展示明确模拟说明', async ({ page }) => {
-  await page.goto('/')
+  await page.route('**/api/**', route => route.fulfill(new URL(route.request().url()).pathname === '/api/me' ? { status: 401, json: {} } : { json: { items: [] } }))
+  await page.goto('/login')
   await expect(page.getByRole('heading', { name: '欢迎回来' })).toBeVisible()
   await expect(page.getByLabel('用户名', { exact: true })).toBeVisible()
   await expect(page.getByLabel('密码', { exact: true })).toBeVisible()
@@ -11,7 +12,7 @@ test('登录入口可键盘操作，表单展示明确模拟说明', async ({ pa
 })
 test('真实API会话可查看市场与逐卡账户', async ({ page }) => {
   test.skip(!process.env.E2E_API, '设置E2E_API=1并启动后端后执行')
-  await page.goto('/')
+  await page.goto('/login')
   await page.getByLabel('用户名', { exact: true }).fill('demo')
   await page.getByLabel('密码', { exact: true }).fill('Demo12345!')
   await page.getByRole('button', { name: '登录', exact: true }).click()

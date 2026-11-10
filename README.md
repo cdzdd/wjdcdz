@@ -23,6 +23,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-Local.ps1
 | 后端健康检查 | http://127.0.0.1:8080/actuator/health |
 | 项目 MySQL | 127.0.0.1:13306 |
 
+首页 `/` 是公开大厅，右上角“登录”打开浮层，投资者登录后的资产入口为 `/dashboard`。大厅的广告和投教栏目为模拟内容；“国家统计局数据发布”通过同源 `GET /api/public/news` 展示官方 RSS 的标题、时间和原文链接。后端启动后在后台每小时刷新，失败时保留上次成功结果；暂无缓存时大厅仍可浏览，并提供官方栏目入口。
+
 现有 MySQL 5.7 服务和 3306 端口不会被修改。项目数据库 `fund_sim` 用于演示，初次安装创建 `fund_sim_test` 用于测试；本机清算升级验收使用新建的 `fund_sim_upgrade_test`，原测试库保留。测试脚本读取本地配置中的测试库名称与连接地址，只允许这两个明确的测试库，拒绝演示库。数据库程序、持久化数据、凭据、日志和备份都位于 Git 忽略的 `.runtime/`。口令保存在 `.runtime/local-env.json`，请勿把此目录提交或公开。
 
 停止项目：
