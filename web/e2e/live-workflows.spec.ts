@@ -13,7 +13,7 @@ test.describe('真实服务浏览器验收', () => {
   test.beforeEach(async({page})=>{page.setDefaultTimeout(12000)})
 
   async function signIn(page:Page,username:string,password:string) {
-    await page.goto('/')
+    await page.goto('/login')
     await page.getByLabel('用户名',{exact:true}).fill(username)
     await page.getByLabel('密码',{exact:true}).fill(password)
     await page.getByRole('button',{name:'登录',exact:true}).click()
@@ -69,7 +69,7 @@ test.describe('真实服务浏览器验收', () => {
   })
 
   test('新用户两卡独立资金、显式申购来源、撤单、定投和通知设置',async({page})=>{
-    await page.goto('/')
+    await page.goto('/login')
     const username='qa'+Date.now().toString(36),password='Qatest12345!',displayName='QA模拟客户'
     await page.getByRole('button',{name:'注册账户',exact:true}).click()
     await page.getByLabel('用户名',{exact:true}).fill(username)
@@ -158,7 +158,7 @@ test.describe('真实服务浏览器验收', () => {
     await page.goto('/messages');await loaded(page)
     const unread=page.getByRole('button',{name:'标为已读',exact:true})
     if(await unread.count()){await unread.first().click();await loaded(page)}
-    await page.goto('/');await loaded(page)
+    await page.goto('/dashboard');await loaded(page)
     await page.setViewportSize({width:390,height:844})
     await page.screenshot({path:'test-results/investor-mobile.png',fullPage:true})
     await page.setViewportSize({width:1440,height:1000})
@@ -243,7 +243,7 @@ test.describe('真实服务浏览器验收', () => {
     let portfolio=await(await page.request.get('/api/portfolio')).json()
     expect(portfolio.positions.find((p:any)=>p.tradingAccountId===first.tradingAccountId).shares).toBe('500.0000')
     expect(portfolio.positions.find((p:any)=>p.tradingAccountId===second.tradingAccountId).shares).toBe('300.0000')
-    await page.goto('/');await loaded(page)
+    await page.goto('/dashboard');await loaded(page)
     await page.getByRole('button',{name:'多账户汇总赎回'}).click()
     dialog=page.getByRole('dialog')
     await dialog.getByLabel('赎回产品').selectOption(String(fund.id))
@@ -266,7 +266,7 @@ test.describe('真实服务浏览器验收', () => {
     await expect(page.locator('.el-message-box')).not.toBeVisible()
     dialog=page.getByRole('dialog',{name:/多账户赎回组/})
     await dialog.getByRole('button',{name:'Close this dialog'}).click();await expect(dialog).not.toBeVisible()
-    await page.goto('/');await loaded(page)
+    await page.goto('/dashboard');await loaded(page)
     await page.locator('tbody tr').filter({hasText:fund.name}).first().getByRole('button',{name:'赎回',exact:true}).click()
     dialog=page.getByRole('dialog')
     await expect(dialog.getByLabel('来源交易账户 / 结算卡')).toHaveValue(String(first.tradingAccountId))
@@ -476,7 +476,7 @@ test.describe('真实服务浏览器验收', () => {
         await dialog.getByRole('button',{name:'保存',exact:true}).click();await expect(dialog).not.toBeVisible()
         const fund=(await get(admin,'/admin/funds')).find((f:any)=>f.code==='CL'+stamp);expect(fund).toBeTruthy();evidence.fund=fund
         await post(admin,'/admin/navs',{fundClassId:fund.id,date:referenceDate,nav:'1.000000'})
-        await page.goto('/');await page.getByRole('button',{name:'注册账户',exact:true}).click()
+        await page.goto('/login');await page.getByRole('button',{name:'注册账户',exact:true}).click()
         await page.getByLabel('用户名',{exact:true}).fill(username);await page.getByLabel('模拟持卡人 / 昵称').fill(displayName)
         await page.getByLabel('密码',{exact:true}).fill(password);await page.getByRole('button',{name:'注册并登录'}).click();await expect(page.locator('.sidebar')).toBeVisible()
         failures=monitor(page)
@@ -569,7 +569,7 @@ test.describe('真实服务浏览器验收', () => {
         const secondExport=await get(admin,'/admin/application-exports/'+exportTask.exportId),secondFile=await download('applications-regenerated.csv')
         expect(secondExport.snapshotVersion).toBe(firstExport.snapshotVersion);expect(secondExport.checksum).toBe(checksum);expect(secondFile.equals(firstFile)).toBe(true)
         evidence.export={firstExport,secondExport,checksum,bytes:firstFile.length,headers,fileRows};await shot(admin,'06-same-snapshot-regeneration')
-        await blockedInvestor.goto('/');await loaded(blockedInvestor)
+        await blockedInvestor.goto('/dashboard');await loaded(blockedInvestor)
         await blockedInvestor.locator('tbody tr').filter({hasText:blockedFund.name}).getByRole('button',{name:'赎回',exact:true}).click()
         dialog=blockedInvestor.getByRole('dialog');await dialog.getByLabel('赎回份额（份，最多四位小数）').fill('900.0000')
         await dialog.getByRole('button',{name:'预估费用与份额'}).click();await expect(dialog.locator('.trade-summary')).toBeVisible();await dialog.getByRole('button',{name:'确认提交申请'}).click();await expect(dialog).not.toBeVisible()
