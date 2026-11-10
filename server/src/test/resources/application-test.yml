@@ -5,5 +5,7 @@ spring:
     password: ${DB_PASSWORD:}
 fund:
   demo: true
+  news:
+    refresh-enabled: false
   scheduler:
     enabled: false

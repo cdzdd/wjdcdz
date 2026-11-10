@@ -45,6 +45,15 @@ class CoreIntegrationTest {
         void csrf() throws Exception { var r=call("GET","/api/auth/csrf",null);assertThat(r.statusCode()).isEqualTo(200);token=map(r).get("token").toString(); }
         void login(String u,String p) throws Exception { csrf();var r=call("POST","/api/auth/login",Map.of("username",u,"password",p));assertThat(r.statusCode()).as(r.body()).isEqualTo(200);csrf(); }
     }
+    @Test void publicNewsIsReadableWithoutOpeningAccountOrWriteEndpoints() throws Exception {
+        var c = new Client();
+        var news = c.call("GET", "/api/public/news", null);
+        assertThat(news.statusCode()).isEqualTo(200);
+        assertThat(c.map(news)).containsEntry("items", List.of()).containsEntry("stale", true);
+        assertThat(c.call("GET", "/api/portfolio", null).statusCode()).isEqualTo(401);
+        c.csrf();
+        assertThat(c.call("POST", "/api/public/news", Map.of()).statusCode()).isEqualTo(401);
+    }
     @Test void csrfOwnershipAndLogoutAreEnforced() throws Exception {
         var c = new Client();
         assertThat(c.call("POST","/api/auth/login",Map.of("username","demo","password","Demo12345!")).statusCode()).isEqualTo(403);
