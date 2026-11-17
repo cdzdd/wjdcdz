@@ -22,6 +22,7 @@ const staffActions = {
   admin_benefits: { path: '/admin/benefits', label: '收益与生命周期' },
 } as const
 const isStaff = computed(() => user.value?.role === 'ADMIN' || user.value?.role === 'OPERATOR')
+const userInitial = computed(() => Array.from(user.value?.displayName || user.value?.username || '我')[0])
 const conversations = ref<Summary[]>([]), conversation = ref<Conversation | null>(null), selectedId = ref('')
 const messageList = ref<HTMLElement | null>(null)
 const availability = ref<Availability | null>(null), statusLoading = ref(false), listLoading = ref(false), detailLoading = ref(false)
@@ -196,17 +197,28 @@ onBeforeUnmount(() => { active = false; selectionVersion++; stopPolling() })
         <div class="assistant-questions"><button v-for="question in questions" :key="question" type="button" :disabled="inputDisabled" @click="draft = question">{{ question }}</button></div>
       </div>
       <div v-if="conversation?.messages.length" ref="messageList" class="assistant-messages" role="log" aria-label="会话消息" aria-live="polite">
-        <article v-for="item in conversation.messages" :key="item.id" class="assistant-message" :class="item.role">
-          <div class="assistant-message-meta"><strong>{{ item.role === 'user' ? '我' : '业务助手' }}</strong><time>{{ formatTime(item.createdAt) }}</time></div>
-          <p v-if="item.content" class="assistant-message-content">{{ item.content }}</p>
-          <p v-else-if="['queued', 'generating'].includes(item.status)" class="muted">{{ item.status === 'queued' ? '等待模型处理…' : '正在生成回答…' }}</p>
-          <p v-if="item.status === 'failed'" class="assistant-message-error">{{ failedMessage(item.errorCode) }}</p>
-          <p v-if="item.status === 'cancelled'" class="muted">本次回答已取消。</p>
-          <div v-if="actionLinks(item).length" class="assistant-controls assistant-actions" aria-label="操作入口">
-            <RouterLink v-for="action in actionLinks(item)" :key="action.path" :to="action.path" class="button">打开{{ action.label }}</RouterLink>
-          </div>
-          <details v-if="item.sources?.length" class="assistant-sources"><summary>参考说明 · {{ item.sources.length }} 条</summary><div v-for="(source, index) in item.sources" :key="index"><strong>{{ source.title }}</strong><blockquote>{{ source.quote }}</blockquote></div></details>
-        </article>
+        <div v-for="item in conversation.messages" :key="item.id" class="assistant-turn" :class="item.role">
+          <span class="assistant-avatar" aria-hidden="true">{{ item.role === 'user' ? userInitial : '助' }}</span>
+          <article class="assistant-message" :class="item.role">
+            <div class="assistant-message-meta">
+              <strong>{{ item.role === 'user' ? '我' : '业务助手' }}</strong>
+              <time>{{ formatTime(item.createdAt) }}</time>
+            </div>
+            <div class="assistant-bubble">
+              <p v-if="item.content" class="assistant-message-content">{{ item.content }}</p>
+              <p v-else-if="['queued', 'generating'].includes(item.status)">{{ item.status === 'queued' ? '等待模型处理…' : '正在生成回答…' }}</p>
+              <p v-if="item.status === 'failed'" class="assistant-message-error">{{ failedMessage(item.errorCode) }}</p>
+              <p v-if="item.status === 'cancelled'">本次回答已取消。</p>
+            </div>
+            <div v-if="actionLinks(item).length" class="assistant-controls assistant-actions" aria-label="操作入口">
+              <RouterLink v-for="action in actionLinks(item)" :key="action.path" :to="action.path" class="button">打开{{ action.label }}</RouterLink>
+            </div>
+            <details v-if="item.sources?.length" class="assistant-sources">
+              <summary>参考说明 · {{ item.sources.length }} 条</summary>
+              <div v-for="(source, index) in item.sources" :key="index"><strong>{{ source.title }}</strong><blockquote>{{ source.quote }}</blockquote></div>
+            </details>
+          </article>
+        </div>
       </div>
       <div v-if="pending" class="assistant-progress" role="status"><span>{{ progressText }}</span><button class="text-button" :disabled="cancelling" @click="cancel">{{ cancelling ? '正在取消…' : '取消本次回答' }}</button></div>
       <p v-if="actionError" class="notice error" role="alert">{{ actionError }}</p>
@@ -219,8 +231,160 @@ onBeforeUnmount(() => { active = false; selectionVersion++; stopPolling() })
 </template>
 
 <style scoped>
-.assistant-availability{display:flex;align-items:center;justify-content:space-between;gap:18px}.assistant-availability strong{display:block;font-size:14px;margin-bottom:4px}.assistant-availability span{display:block;font-size:13px}.assistant-availability button{flex-shrink:0}.assistant-layout{display:grid;grid-template-columns:245px minmax(0,1fr);gap:20px}.assistant-history{align-self:start}.assistant-history h2,.assistant-chat h2{font-size:16px}.assistant-conversations{max-height:430px;overflow-y:auto;margin:15px -8px}.assistant-conversation{width:100%;text-align:left;border:0;background:transparent;color:var(--ink);padding:12px 10px;border-radius:6px;margin-bottom:4px}.assistant-conversation:hover,.assistant-conversation.selected{background:var(--brand-soft)}.assistant-conversation.selected{box-shadow:inset 3px 0 var(--brand)}.assistant-conversation span{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.assistant-conversation small{display:block;color:var(--muted);font-size:11px;margin-top:7px}.assistant-history-empty{margin:22px 0}.assistant-chat{min-height:570px;display:flex;flex-direction:column;min-width:0}.assistant-welcome{max-width:640px;margin:auto;padding:28px 10px;text-align:center}.assistant-mark{display:block;color:var(--brand);font-size:42px;margin-bottom:16px}.assistant-welcome h3{font-size:19px}.assistant-welcome p{font-size:14px}.assistant-questions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:23px}.assistant-questions button{text-align:left;background:#f5f8fc;border:1px solid var(--line);border-radius:7px;padding:13px;font-size:13px;line-height:1.7;color:#39516b}.assistant-questions button:hover{border-color:var(--brand)}.assistant-messages{display:flex;flex-direction:column;gap:20px;padding:5px 0 22px}.assistant-message{padding:18px;background:#f8fafd;border:1px solid var(--line);border-radius:8px}.assistant-message.user{background:#edf2f8;border-color:#d8e1ec;margin-left:35px}.assistant-message-meta{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:10px;font-size:13px}.assistant-message-meta time{font-size:11px;color:var(--muted)}.assistant-message-content{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.9;margin-bottom:0}.assistant-message-error{color:#ae584d;font-size:13px;margin:10px 0 0}.assistant-sources{font-size:13px;border-top:1px solid var(--line);margin-top:17px;padding-top:12px}.assistant-sources summary{color:var(--brand);cursor:pointer}.assistant-sources>div{padding-top:15px}.assistant-sources blockquote{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);margin:8px 0 0;padding-left:13px;border-left:2px solid #c9d9ec;line-height:1.8}.assistant-compose{margin-top:auto;border-top:1px solid var(--line);padding-top:20px}.assistant-compose textarea{resize:vertical;min-height:94px;max-height:260px}.assistant-compose-actions{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-top:12px}.assistant-progress{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 15px;background:#edf2f8;border-radius:6px;margin-bottom:16px;font-size:13px;color:#39516b}
-@media(max-width:1050px){.assistant-layout{grid-template-columns:205px minmax(0,1fr)}.assistant-questions{grid-template-columns:1fr}}
-@media(max-width:760px){.assistant-layout{grid-template-columns:1fr}.assistant-history{margin-bottom:0}.assistant-conversations{max-height:160px}.assistant-chat{min-height:480px}.assistant-availability{align-items:flex-start}.assistant-message.user{margin-left:15px}.assistant-compose-actions{align-items:flex-end}.assistant-compose-actions span{max-width:55%}}
-.assistant-compact{display:block}.assistant-compact .assistant-chat{min-height:0}.assistant-compact .assistant-welcome{max-width:none;margin:0;padding:0 0 12px;text-align:left}.assistant-compact .assistant-welcome p{margin:0}.assistant-compact .assistant-questions{display:flex;flex-wrap:wrap;margin-top:10px}.assistant-compact .assistant-questions button{padding:7px 12px}.assistant-compact .assistant-messages{max-height:280px;overflow-y:auto;overscroll-behavior:contain}.assistant-compact .assistant-compose{padding-top:12px}.assistant-compact .assistant-compose textarea{min-height:58px}.assistant-controls{display:flex;flex-wrap:wrap;gap:8px 14px}.assistant-actions{margin-top:12px}
+.assistant-layout, .assistant-availability {
+  font-family: var(--font-ui);
+  font-size: var(--page-subtitle-size);
+  line-height: var(--page-subtitle-line-height);
+  color: var(--page-subtitle-color);
+}
+.assistant-layout :is(.muted, .small, .loading, .notice, label, textarea, .button, .text-button),
+.assistant-availability .text-button {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+.assistant-layout :is(.muted, .small, .loading, label) {
+  color: var(--page-subtitle-color);
+}
+.assistant-availability {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.assistant-availability strong, .assistant-availability span { display: block; }
+.assistant-availability strong { margin-bottom: 4px; }
+.assistant-availability button { flex-shrink: 0; }
+.assistant-layout { display: grid; grid-template-columns: 245px minmax(0, 1fr); gap: 20px; }
+.assistant-history { align-self: start; }
+.assistant-history h2, .assistant-chat h2 { font-size: 16px; color: var(--ink); }
+.assistant-conversations { max-height: 430px; overflow-y: auto; margin: 15px -8px; }
+.assistant-conversation {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 12px 10px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+}
+.assistant-conversation:hover, .assistant-conversation.selected { background: var(--brand-soft); }
+.assistant-conversation.selected { box-shadow: inset 3px 0 var(--brand); }
+.assistant-conversation span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-conversation small {
+  display: block;
+  font-size: inherit;
+  color: var(--page-subtitle-color);
+  margin-top: 4px;
+}
+.assistant-history-empty { margin: 22px 0; }
+.assistant-chat { min-height: 570px; display: flex; flex-direction: column; min-width: 0; }
+.assistant-welcome { max-width: 640px; margin: auto; padding: 28px 10px; text-align: center; }
+.assistant-welcome h3 { font-size: 19px; color: var(--ink); }
+.assistant-questions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 23px; }
+.assistant-questions button {
+  text-align: left;
+  background: #f5f8fc;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 13px;
+  color: var(--page-subtitle-color);
+}
+.assistant-questions button:hover { border-color: var(--brand); }
+.assistant-messages { display: flex; flex-direction: column; gap: 20px; padding: 5px 1px 22px; }
+.assistant-turn { display: flex; align-items: flex-start; gap: 10px; }
+.assistant-turn.user { flex-direction: row-reverse; }
+.assistant-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--brand);
+  background: #e8eff9;
+  font-weight: 600;
+}
+.assistant-turn.user .assistant-avatar { background: #cde6ff; }
+.assistant-message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  width: fit-content;
+  min-width: 0;
+  max-width: min(calc(100% - 42px), 76ch);
+}
+.assistant-message.user { align-items: flex-end; }
+.assistant-message-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; }
+.assistant-message.user .assistant-message-meta { justify-content: flex-end; }
+.assistant-message-meta strong { color: var(--ink); }
+.assistant-bubble {
+  width: fit-content;
+  max-width: 100%;
+  padding: 9px 14px;
+  background: #f3f6fa;
+  border: 1px solid var(--line);
+  border-radius: 3px 14px 14px 14px;
+}
+.assistant-message.user .assistant-bubble {
+  color: #1f3047;
+  background: #aad9ff;
+  border-color: #92caff;
+  border-radius: 14px 3px 14px 14px;
+}
+.assistant-bubble p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.assistant-message-error { color: #ae584d; }
+.assistant-sources { align-self: stretch; border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px; }
+.assistant-sources summary { color: var(--brand); cursor: pointer; }
+.assistant-sources > div { padding-top: 12px; overflow-wrap: anywhere; }
+.assistant-sources blockquote {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid #c9d9ec;
+}
+.assistant-compose { margin-top: auto; border-top: 1px solid var(--line); padding-top: 20px; }
+.assistant-compose textarea { resize: vertical; min-height: 94px; max-height: 260px; }
+.assistant-compose-actions { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 12px; }
+.assistant-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 15px;
+  background: #edf2f8;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+.assistant-compact { display: block; }
+.assistant-compact .assistant-chat { min-height: 0; }
+.assistant-compact .assistant-welcome { max-width: none; margin: 0; padding: 0 0 12px; text-align: left; }
+.assistant-compact .assistant-welcome p { margin: 0; }
+.assistant-compact .assistant-questions { display: flex; flex-wrap: wrap; margin-top: 10px; }
+.assistant-compact .assistant-questions button { padding: 7px 12px; }
+.assistant-compact .assistant-messages { max-height: 280px; overflow-y: auto; overscroll-behavior: contain; }
+.assistant-compact .assistant-compose { padding-top: 12px; }
+.assistant-compact .assistant-compose textarea { min-height: 58px; }
+.assistant-controls { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.assistant-actions { margin-top: 4px; }
+@media (max-width: 1050px) {
+  .assistant-layout { grid-template-columns: 205px minmax(0, 1fr); }
+  .assistant-questions { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .assistant-layout { grid-template-columns: 1fr; }
+  .assistant-history { margin-bottom: 0; }
+  .assistant-conversations { max-height: 160px; }
+  .assistant-chat { min-height: 480px; }
+  .assistant-availability { align-items: flex-start; }
+  .assistant-compose-actions { align-items: flex-end; }
+  .assistant-compose-actions span { max-width: 55%; }
+}
 </style>

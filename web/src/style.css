@@ -20,6 +20,9 @@
   --ink:#1f3047;
   --brand:#163b69;
   --muted:#69798c;
+  --page-subtitle-size:14px;
+  --page-subtitle-line-height:1.8;
+  --page-subtitle-color:var(--muted);
   --line:#e1e7ef;
   --el-color-primary:#163b69;
   --brand-strong:#24558f;
@@ -277,6 +280,12 @@ small {
   display:flex;
   flex-direction:column;
   gap:6px;
+  min-height:0;
+  overflow-y:auto;
+}
+@media (width > 760px) {
+  .sidebar nav { scrollbar-width:none; }
+  .sidebar nav::-webkit-scrollbar { width:0; }
 }
 .sidebar nav a {
   color:#c7d6e8;
@@ -366,6 +375,9 @@ small {
 }
 .page-header .muted {
   margin:0;
+  color:var(--page-subtitle-color);
+  font-size:var(--page-subtitle-size);
+  line-height:var(--page-subtitle-line-height);
 }
 .header-actions,.toolbar {
   display:flex;
@@ -1038,13 +1050,13 @@ input[type=checkbox] {
 }
 
 @media(min-width:961px) {
-  .app-layout { zoom:.8; min-height:125dvh; }
+  .app-layout { zoom:.8; min-height:125dvh; --page-subtitle-size:16px; }
   .sidebar { width:248px; height:125dvh; }
   .sidebar nav a { min-height:50px; align-items:center; font-size:16px; }
   .topbar { height:84px; }
   .page-content { max-width:1600px; min-height:calc(125dvh - 134px); }
   .app-layout h1 { font-size:32px; }
-  .app-layout .page-header .muted,.app-layout .topbar-context,.app-layout .user-area { font-size:16px; }
+  .app-layout .topbar-context,.app-layout .user-area { font-size:16px; }
   .app-layout .button { min-height:44px; font-size:16px; }
   .data-table { font-size:15px; }
   .data-table th { font-size:14px; }
