@@ -58,12 +58,17 @@ public class AssistantClient {
     }
 
     public ResponseEntity<Map<String, Object>> request(long owner, String method, String path, Map<String, Object> body) {
+        return request(owner, method, path, body, "INVESTOR");
+    }
+
+    public ResponseEntity<Map<String, Object>> request(long owner, String method, String path, Map<String, Object> body, String role) {
         if (origin == null) throw new ApiException(503, "ASSISTANT_DISABLED", "业务助手尚未启用，基金业务可正常使用");
         if (!permits.tryAcquire()) throw new ApiException(429, "ASSISTANT_BUSY", "业务助手请求较多，请稍后重试");
         CompletableFuture<HttpResponse<byte[]>> pending = null;
         try {
             var builder = HttpRequest.newBuilder(origin.resolve("/internal/fund-assistant" + path)).timeout(RESPONSE_TIMEOUT)
                     .header("Authorization", "Bearer " + key).header("X-Fund-User-Id", Long.toString(owner))
+                    .header("X-Fund-Role", role)
                     .header("Accept", "application/json");
             var publisher = body == null ? HttpRequest.BodyPublishers.noBody()
                     : HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body));

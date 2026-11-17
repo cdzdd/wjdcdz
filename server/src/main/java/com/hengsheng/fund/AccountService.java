@@ -34,8 +34,11 @@ public class AccountService {
     }
     public void requireRole(String role) {
         if(ClearingExecutionContext.batch() && ClearingExecutionContext.actorId()==null)return;
-        var user=db.one("SELECT role FROM users WHERE id=?",userId());String current=user.get("role").toString();
+        String current=roleFor(userId());
         if(!current.equals(role)&&!("OPERATOR".equals(role)&&"ADMIN".equals(current)))throw new ApiException(403,"FORBIDDEN","权限不足");
+    }
+    String roleFor(long authenticatedUserId) {
+        return db.one("SELECT role FROM users WHERE id=?", authenticatedUserId).get("role").toString();
     }
     public LocalDateTime clock() {
         if(ClearingExecutionContext.businessTime()!=null)return ClearingExecutionContext.businessTime();

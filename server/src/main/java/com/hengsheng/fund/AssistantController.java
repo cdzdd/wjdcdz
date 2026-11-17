@@ -22,14 +22,17 @@ public class AssistantController {
         return client.request(owner, "POST", "/conversations", Map.of());
     }
     @GetMapping("/conversations/{id}") public ResponseEntity<Map<String, Object>> conversation(@PathVariable String id) {
-        return client.request(accounts.userId(), "GET", "/conversations/" + uuid(id), null);
+        long owner = accounts.userId();
+        String conversation = uuid(id);
+        return client.request(owner, "GET", "/conversations/" + conversation, null, accounts.roleFor(owner));
     }
     @PostMapping("/conversations/{id}/messages") public ResponseEntity<Map<String, Object>> message(@PathVariable String id, @RequestBody Map<String, Object> input) {
         long owner = accounts.userId(); only(input, Set.of("content", "requestId"));
         if (!(input.get("content") instanceof String content) || content.isBlank() || content.codePointCount(0, content.length()) > 2000)
             throw ApiException.bad("问题须为1至2000个字符");
         if (!(input.get("requestId") instanceof String requestId)) throw ApiException.bad("请求标识须为UUID");
-        return client.request(owner, "POST", "/conversations/" + uuid(id) + "/messages", Map.of("content", content, "requestId", uuid(requestId)));
+        return client.request(owner, "POST", "/conversations/" + uuid(id) + "/messages",
+                Map.of("content", content, "requestId", uuid(requestId)), accounts.roleFor(owner));
     }
     @PostMapping("/conversations/{id}/cancel") public ResponseEntity<Map<String, Object>> cancel(@PathVariable String id, @RequestBody(required = false) Map<String, Object> input) {
         long owner = accounts.userId(); only(input, Set.of());
