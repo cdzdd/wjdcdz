@@ -139,20 +139,21 @@ onBeforeUnmount(() => {
   padding: 50px 42px 36px;
 }
 .lobby-auth-kicker { color: #315e92; font-size: 13px; font-weight: 600; letter-spacing: 2px; }
+.lobby-auth-dialog h2 { font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif; }
 .lobby-auth-story h2 { margin: 18px 0 24px; font-size: clamp(30px, 4vw, 46px); line-height: 1.4; font-weight: 550; }
 .lobby-auth-story em { color: #315e92; font-style: normal; }
 .lobby-auth-story p, .lobby-auth-card > p { color: #69798c; font-size: 15px; line-height: 1.8; }
 .lobby-auth-chart { display: block; width: 100%; height: 120px; margin: 26px 0 20px; }
 .lobby-auth-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
 .lobby-auth-facts > div { border-top: 1px solid #dce5ef; padding-top: 12px; }
-.lobby-auth-facts small { color: #69798c; font-size: 12px; }
+.lobby-auth-facts small { color: #69798c; font-size: 13px; }
 .lobby-auth-facts strong { display: block; margin: 6px 0; font-size: 17px; }
-.lobby-auth-facts p { margin-bottom: 0; font-size: 13px; }
+.lobby-auth-facts p { margin-bottom: 0; font-size: 14px; }
 .lobby-auth-card { min-width: 0; padding: 38px; border: 1px solid #e0e6ee; border-radius: 9px; background: #fff; }
-.lobby-auth-card .lobby-auth-kicker { color: #315e92; font-size: 12px; margin-bottom: 8px; }
+.lobby-auth-card .lobby-auth-kicker { color: #315e92; font-size: 13px; margin-bottom: 8px; }
 .lobby-auth-card h2 { font-size: 32px; font-weight: 550; margin: 0 0 10px; }
 .lobby-auth-card fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
-.lobby-auth-card label { color: #39516b; font-size: 14px; margin: 15px 0; }
+.lobby-auth-card label { color: #39516b; font-size: 15px; margin: 15px 0; }
 .lobby-auth-card input { min-height: 46px; color: #1f3047; border-color: #dce5ef; font-size: 15px; }
 .lobby-auth-dialog :is(input, button):focus-visible { outline: 3px solid #638fc4; outline-offset: 2px; }
 .lobby-auth-submit {
@@ -171,8 +172,8 @@ onBeforeUnmount(() => {
 }
 .lobby-auth-submit:hover { background: #24558f; }
 .lobby-auth-link { padding: 0; border: 0; background: transparent; color: #24558f; font-weight: 600; }
-.lobby-auth-card .lobby-auth-switch { margin: 16px 0 0; text-align: center; font-size: 14px; }
-.lobby-auth-card .lobby-auth-note { margin: 12px 0 0; text-align: center; font-size: 12px; }
+.lobby-auth-card .lobby-auth-switch { margin: 16px 0 0; text-align: center; font-size: 15px; }
+.lobby-auth-card .lobby-auth-note { margin: 12px 0 0; text-align: center; font-size: 13px; }
 @media (min-width: 961px) { .lobby-auth-dialog { zoom: 80%; } }
 @media (max-width: 960px) { .lobby-auth-main { gap: 26px; padding: 50px 26px 28px; } .lobby-auth-card { padding: 25px; } }
 @media (max-width: 760px) {

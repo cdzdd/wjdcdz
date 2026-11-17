@@ -30,4 +30,3 @@ onBeforeUnmount(() => window.removeEventListener('session-expired', expired))
     <div class="workspace"><header class="topbar"><div class="mobile-brand">恒升 <span>SIMULATION</span></div><span class="topbar-context">{{ isAdmin ? '销售运营工作台' : '基金学习与交易' }}</span><div class="user-area"><RouterLink v-if="isAdmin" to="/dashboard">投资者视图</RouterLink><RouterLink v-else to="/messages">消息</RouterLink><span class="avatar">{{ (user.displayName || user.username).slice(0, 1) }}</span><span>{{ user.displayName || user.username }}</span><button class="text-button" @click="logout">退出</button></div></header><main class="page-content"><div class="page-surface" :key="router.currentRoute.value.fullPath"><RouterView/></div></main><footer class="site-footer">恒升基金模拟平台 · 所有交易使用虚拟资金 · 业务参数为教学模拟规则</footer></div>
   </div>
 </template>
-<style scoped>.sidebar nav{min-height:0;overflow-y:auto}</style>

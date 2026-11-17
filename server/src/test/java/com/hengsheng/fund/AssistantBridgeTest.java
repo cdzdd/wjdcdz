@@ -61,6 +61,8 @@ class AssistantBridgeTest {
         when(context.getBean(AccountService.class).userId()).thenAnswer(invocation -> switch (SecurityContextHolder.getContext().getAuthentication().getName()) {
             case "alice" -> 11L; case "bob" -> 22L; default -> 33L;
         });
+        when(context.getBean(AccountService.class).roleFor(anyLong())).thenAnswer(invocation ->
+                invocation.<Long>getArgument(0) == 22L ? "ADMIN" : "INVESTOR");
         mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
     }
     @AfterEach void cleanup() {
@@ -86,20 +88,22 @@ class AssistantBridgeTest {
 
     @Test void identityIsDerivedFromFundSessionAndBrowserHeadersAreNotForwarded() throws Exception {
         var owner = new AtomicReference<String>(); var authorization = new AtomicReference<String>();
-        var cookie = new AtomicReference<String>(); var received = new AtomicReference<String>();
+        var cookie = new AtomicReference<String>(); var received = new AtomicReference<String>(); var role = new AtomicReference<String>();
         handler.set(exchange -> {
             assertThat(exchange.getRequestURI().getPath()).isEqualTo("/internal/fund-assistant/conversations/" + ID + "/messages");
             owner.set(exchange.getRequestHeaders().getFirst("X-Fund-User-Id"));
+            role.set(exchange.getRequestHeaders().getFirst("X-Fund-Role"));
             authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
             cookie.set(exchange.getRequestHeaders().getFirst("Cookie"));
             received.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             respond(exchange, 202, "{\"conversationId\":\"" + ID + "\",\"requestId\":\"" + ID + "\",\"status\":\"queued\"}");
         });
         mvc.perform(post("/api/assistant/conversations/" + ID + "/messages").with(user("alice")).with(csrf())
-                .header("X-Fund-User-Id", "999").header("Authorization", "Bearer browser-key")
+                .header("X-Fund-User-Id", "999").header("X-Fund-Role", "ADMIN").header("Authorization", "Bearer browser-key")
                 .header("Cookie", "qa_session=must-not-leave-fund").contentType("application/json").content(message()))
                 .andExpect(status().isAccepted()).andExpect(jsonPath("$.status").value("queued"));
         assertThat(owner.get()).isEqualTo("11"); assertThat(authorization.get()).isEqualTo("Bearer " + KEY);
+        assertThat(role.get()).isEqualTo("INVESTOR");
         assertThat(cookie.get()).isNull(); assertThat(received.get()).contains("如何申购？", "requestId").doesNotContain("999", "tenant", "knowledge");
     }
 

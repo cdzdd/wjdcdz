@@ -11,7 +11,25 @@ const props = defineProps<{ history: Row[]; money?: boolean }>()
 const element = ref<HTMLDivElement>()
 let chart: EChartsType | undefined, observer: ResizeObserver | undefined
 function draw() {
-  chart?.setOption({ animation: false, color: ['#163b69'], tooltip: { trigger: 'axis' }, grid: { left: 55, right: 20, top: 20, bottom: 40 }, xAxis: { type: 'category', data: props.history.map(r => r.date), axisLine: { lineStyle: { color: '#d8e1ec' } }, axisLabel: { color: '#69798c' } }, yAxis: { type: 'value', scale: true, axisLabel: { color: '#69798c' }, splitLine: { lineStyle: { color: '#e9eef4' } } }, series: [{ type: 'line', smooth: true, symbol: 'circle', symbolSize: 5, data: props.history.map(r => Number(props.money ? r.incomePerTenThousand : r.nav)), areaStyle: { color: '#e2ecf8' }, lineStyle: { width: 3 } }] }, true)
+  if (!chart || !element.value) return
+  const fontFamily = getComputedStyle(element.value).fontFamily
+  const axisLabel = { color: '#69798c', fontFamily, fontSize: 13 }
+  chart.setOption({
+    animation: false,
+    color: ['#163b69'],
+    tooltip: { trigger: 'axis', textStyle: { fontFamily, fontSize: 15 } },
+    grid: { left: 55, right: 20, top: 20, bottom: 40 },
+    xAxis: {
+      type: 'category', data: props.history.map(row => row.date),
+      axisLine: { lineStyle: { color: '#d8e1ec' } }, axisLabel,
+    },
+    yAxis: { type: 'value', scale: true, axisLabel, splitLine: { lineStyle: { color: '#e9eef4' } } },
+    series: [{
+      type: 'line', smooth: true, symbol: 'circle', symbolSize: 5,
+      data: props.history.map(row => Number(props.money ? row.incomePerTenThousand : row.nav)),
+      areaStyle: { color: '#e2ecf8' }, lineStyle: { width: 3 },
+    }],
+  }, true)
 }
 onMounted(() => { if (element.value) { chart = init(element.value); draw(); observer = new ResizeObserver(() => chart?.resize()); observer.observe(element.value) } })
 watch(() => props.history, draw, { deep: true })

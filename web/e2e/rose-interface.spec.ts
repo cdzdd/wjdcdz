@@ -29,6 +29,7 @@ async function mockAuth(page: Page, role = 'INVESTOR', handler?: (route: Route, 
       '/api/portfolio': { positions: [], accounts: [], totalAssets: 100000, available: 100000, frozen: 0, invested: 0, pending: 0, totalIncome: 0 },
       '/api/public/news': { items: [], stale: false, updatedAt: null },
       '/api/funds': [], '/api/orders': [], '/api/bank-cards': [], '/api/trading-accounts': [], '/api/sip-plans': [],
+      '/api/assistant/status': { available: false, reason: 'disabled' }, '/api/assistant/conversations': { items: [] },
       '/api/admin/dashboard': {}, '/api/admin/jobs': [], '/api/admin/reconciliation': { ok: true, issues: [] }
     }
     if (!(path in fixtures)) throw new Error('Unexpected visual test request: ' + path)

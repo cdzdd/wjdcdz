@@ -121,3 +121,49 @@ test('仅等待中的会话轮询，取消及离开页面都会停止轮询', as
   await page.clock.fastForward(8000)
   expect(reads).toBe(afterLeave)
 })
+
+for (const role of ['INVESTOR', 'ADMIN', 'OPERATOR'] as const) {
+  test(`${role} 登录后可在首页直接提问，回答只显示允许的站内入口`, async ({ page }) => {
+    const staff = role !== 'INVESTOR'
+    const identity = { id: 1, username: 'learner', displayName: '业务演示', role, opened: true, mustChangePassword: false }
+    const question = staff ? '在哪看资金与持仓对账结果？' : '第一次买基金怎么开始？'
+    let authenticated = false, created = false, answered = false
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname, method = route.request().method()
+      if (path === '/api/auth/login') { authenticated = true; return route.fulfill({ json: identity }) }
+      if (path === '/api/me') return authenticated ? route.fulfill({ json: identity }) : route.fulfill({ status: 401, json: {} })
+      if (path === '/api/auth/csrf') return route.fulfill({ json: { token: 'csrf-test', headerName: 'X-CSRF-TOKEN' } })
+      if (path === '/api/public/news') return route.fulfill({ json: { items: [] } })
+      if (path === '/api/portfolio') return route.fulfill({ json: { accounts: [], positions: [], totalAssets: 100000 } })
+      if (path === '/api/admin/dashboard') return route.fulfill({ json: {} })
+      if (path === '/api/admin/reconciliation') return route.fulfill({ json: { ok: true, issues: [] } })
+      if (path === '/api/funds' || path === '/api/admin/jobs') return route.fulfill({ json: [] })
+      if (path === '/api/assistant/status') return route.fulfill({ json: ready })
+      if (path === '/api/assistant/conversations' && method === 'POST') { created = true; return route.fulfill({ json: summary() }) }
+      if (path === '/api/assistant/conversations') return route.fulfill({ json: { items: created ? [summary()] : [] } })
+      if (path === `/api/assistant/conversations/${firstId}/messages` && method === 'POST') {
+        expect(created).toBe(true)
+        expect(route.request().postDataJSON()).toEqual({ content: question, requestId: expect.any(String) })
+        answered = true
+        return route.fulfill({ status: 202, json: { status: 'queued' } })
+      }
+      if (path === `/api/assistant/conversations/${firstId}`) return route.fulfill({ json: detail(firstId, '操作指导', answered ? 'completed' : 'idle', answered ? [
+        { id: 'answer', role: 'assistant', content: '按下方入口查看操作步骤。', status: 'completed', createdAt,
+          suggested_actions: staff ? ['admin_system', '//invalid.test', 'constructor'] : ['account_settings', 'admin_system', '//invalid.test', 'constructor'] },
+      ] : []) })
+      throw new Error('Unexpected request: ' + path)
+    })
+    await page.goto('/login')
+    await page.getByLabel('用户名', { exact: true }).fill('learner')
+    await page.getByLabel('密码', { exact: true }).fill('Preview12345!')
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await expect(page).toHaveURL(staff ? /\/admin\/overview$/ : /\/dashboard$/)
+    const card = page.getByRole('region', { name: '业务助手聊天' })
+    await expect(card.getByRole('button', { name: question, exact: true })).toBeVisible()
+    await card.getByLabel('你的问题', { exact: true }).fill(question)
+    await card.getByRole('button', { name: '发送问题', exact: true }).click()
+    const answer = card.getByRole('log')
+    await expect(answer.getByRole('link', { name: staff ? '打开运营与审计' : '打开账户设置' })).toHaveAttribute('href', staff ? '/admin/system' : '/profile')
+    await expect(answer.getByRole('link')).toHaveCount(1)
+  })
+}

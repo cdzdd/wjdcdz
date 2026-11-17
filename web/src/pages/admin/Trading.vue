@@ -144,9 +144,9 @@ function reasons(row:Row):string[]{
 .job-result{margin-top:22px}
 .job-result h3{margin-bottom:12px}
 .job-counts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.job-summary{display:grid;grid-template-columns:110px 1fr;gap:10px 16px;margin:0 0 24px;font-size:13px}
+.job-summary{display:grid;grid-template-columns:110px 1fr;gap:10px 16px;margin:0 0 24px;font-size:14px}
 .job-summary dt{color:var(--muted)}
 .job-summary dd{margin:0;overflow-wrap:anywhere}
-.job-reasons{padding-left:20px;margin:12px 0;line-height:1.8;font-size:13px;overflow-wrap:anywhere}
+.job-reasons{padding-left:20px;margin:12px 0;line-height:1.8;font-size:14px;overflow-wrap:anywhere}
 .status.muted{background:#f0f3f4}
 </style>
