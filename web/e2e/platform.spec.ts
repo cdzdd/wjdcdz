@@ -34,6 +34,12 @@ test('任务中心区分空批次和等待项，只展示非零处理数量并�
     { id: 7, type: 'CONFIRM', date: '2026-10-13', status: 'FAILED', processed: 0, waiting: 0, failed: 1, details: '', createdAt: businessTime, actualRunAt: actualTime },
     { id: 6, type: 'ALL', date: '2026-10-13', status: 'PARTIAL', processed: 8, waiting: 2, failed: 1, details: ['本批次部分完成'], createdAt: businessTime, actualRunAt: actualTime }
   ]
+  const runs = [
+    { runId: 29, state: 'NO_WORK', processed: 0, waiting: 0, failed: 0 },
+    { runId: 28, state: 'RUNNING', processed: 0, waiting: 0, failed: 0 },
+    { runId: 27, state: 'FAILED', processed: 0, waiting: 0, failed: 0 },
+    { runId: 26, state: 'COMPLETED', processed: 0, waiting: 0, failed: 0 }
+  ]
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/admin/jobs' && route.request().method() === 'POST') {
@@ -44,7 +50,9 @@ test('任务中心区分空批次和等待项，只展示非零处理数量并�
       '/api/auth/csrf': { token: 'test-token', headerName: 'X-CSRF-TOKEN' },
       '/api/me': { id: 1, username: 'admin', displayName: '管理员', role: 'ADMIN', mustChangePassword: false },
       '/api/admin/jobs/context': { businessTime, actualTime, demo: true },
-      '/api/admin/clearing-runs': [], '/api/admin/jobs': jobs, '/api/admin/orders': [], '/api/admin/positions': [], '/api/admin/payouts': [], '/api/sip-plans': []
+      '/api/admin/clearing-runs': runs, '/api/admin/jobs': jobs, '/api/admin/orders': [], '/api/admin/positions': [], '/api/admin/payouts': [], '/api/sip-plans': [],
+      '/api/admin/dashboard': {}, '/api/admin/reconciliation': { ok: true, issues: [] },
+      '/api/assistant/status': { available: false }, '/api/assistant/conversations': { items: [] }
     }
     if (!(path in responses)) throw new Error('Unexpected request: ' + path)
     await route.fulfill({ json: responses[path] })
@@ -55,7 +63,27 @@ test('任务中心区分空批次和等待项，只展示非零处理数量并�
   await expect(page.getByRole('columnheader', { name: /^(成功|等待|失败)处理项$/ })).toHaveCount(0)
   await expect(page.getByRole('columnheader', { name: '实际运行时间', exact: true })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: '业务时钟', exact: true })).toBeVisible()
-  const rows = page.locator('tbody tr')
+  const panel = (title: string) => page.locator('section.panel').filter({
+    has: page.getByRole('heading', { name: title, exact: true })
+  })
+  const running = panel('后台运行')
+  const runningToggle = running.getByRole('checkbox', { name: '显示全部', exact: true })
+  await expect(runningToggle).not.toBeChecked()
+  await expect(running.locator('tbody tr')).toHaveCount(3)
+  await expect(running.locator('tbody')).toContainText('运行中')
+  await expect(running.locator('tbody')).toContainText('失败')
+  await runningToggle.check()
+  await expect(running.locator('tbody tr')).toHaveCount(4)
+  await runningToggle.uncheck()
+  await expect(running.locator('tbody tr')).toHaveCount(3)
+
+  const history = panel('任务历史')
+  const historyToggle = history.getByRole('checkbox', { name: '显示全部', exact: true })
+  const rows = history.locator('tbody tr')
+  await expect(historyToggle).not.toBeChecked()
+  await expect(rows).toHaveCount(3)
+  await historyToggle.check()
+  await expect(rows).toHaveCount(4)
   await expect(rows.nth(0)).toContainText('无待处理业务')
   await expect(rows.nth(0)).toContainText('旧记录未采集')
   await expect(rows.nth(0).locator('td').nth(4)).toHaveText('本次无需处理')
@@ -90,6 +118,18 @@ test('任务中心区分空批次和等待项，只展示非零处理数量并�
   await expect(page.locator('.job-result')).not.toContainText(/(成功|等待|失败)\s*(处理项\s*)?0/)
   await expect(page.getByLabel('业务日期', { exact: true })).toHaveValue('2026-10-10')
   await page.screenshot({ path: testInfo.outputPath('job-display.png'), fullPage: true })
+  await historyToggle.uncheck()
+  await expect(rows).toHaveCount(3)
+
+  await page.goto('/admin/overview')
+  const recent = panel('最近任务')
+  const recentToggle = recent.getByRole('checkbox', { name: '显示全部', exact: true })
+  await expect(recentToggle).not.toBeChecked()
+  await expect(recent.locator('tbody tr')).toHaveCount(3)
+  await recentToggle.check()
+  await expect(recent.locator('tbody tr')).toHaveCount(4)
+  await recentToggle.uncheck()
+  await expect(recent.locator('tbody tr')).toHaveCount(3)
 })
 
 async function mockUpgrade(page: import('@playwright/test').Page, role='ADMIN') {

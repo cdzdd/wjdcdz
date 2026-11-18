@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { useRoute,useRouter } from 'vue-router'
 import { api } from '../../api'
 import { usePage,perform,busy,user } from '../../state'
-import { cell, jobOutcome, label, stateTone,requestKey } from '../../domain'
+import { cell, isEmptyJob, jobOutcome, label, stateTone,requestKey } from '../../domain'
 import type { Row } from '../../domain'
 import PageHeader from '../../components/PageHeader.vue'
 import DataTable from '../../components/DataTable.vue'
 import LoadState from '../../components/LoadState.vue'
 const tab=ref('jobs'),jobs=ref<Row[]>([]),orders=ref<Row[]>([]),positions=ref<Row[]>([]),payouts=ref<Row[]>([]),plans=ref<Row[]>([]),date=ref(''),type=ref('ALL'),result=ref<Row|null>(null),detail=ref<Row|null>(null),detailOpen=ref(false),detailIsJob=ref(false),context=ref<Row|null>(null)
 const route=useRoute(),router=useRouter(),runs=ref<Row[]>([]),exports=ref<Row[]>([]),registrars=ref<Row[]>([]),registrarId=ref(''),revisionSetId=ref(String(route.query.revisionSetId||'')),preview=ref<Row|null>(null),previewError=ref(''),exportTask=ref<Row|null>(null)
+const showAllRuns = ref(false)
+const showAllHistory = ref(false)
+const visibleRuns = computed(() => showAllRuns.value ? runs.value : runs.value.filter(run => !isEmptyJob(run)))
+const visibleHistory = computed(() => showAllHistory.value ? jobs.value : jobs.value.filter(job => !isEmptyJob(job)))
 let timer:ReturnType<typeof setTimeout>|undefined,disposed=false,runGeneration=0
 onUnmounted(()=>{disposed=true;runGeneration++;clearTimeout(timer)})
 const countItems=[{key:'processed',label:'成功',tone:'success'},{key:'waiting',label:'等待',tone:'warning'},{key:'failed',label:'失败',tone:'danger'}]
@@ -92,11 +96,20 @@ function reasons(row:Row):string[]{
       <p v-if="type==='MONEY'||type==='ALL'" class="muted small" style="margin-top:14px">货币收益按所选业务日期的前一自然日结转。例如选择10月15日，会处理10月14日收益。</p>
 
     </section>
-    <section class="panel"><h2>后台运行</h2><DataTable :rows="runs" :columns="[{key:'runId',label:'任务ID'},{key:'type',label:'类型'},{key:'businessDate',label:'业务日期'},{key:'state',label:'状态',kind:'state'},{key:'startedAt',label:'真实开始时间',kind:'date'},{key:'finishedAt',label:'真实结束时间',kind:'date'}]"><template #actions="{row}"><button class="text-button" @click="trackRun(row.runId||row.id)">查询进度</button></template></DataTable></section>
     <section class="panel">
-      <h2>任务历史</h2>
+      <div class="section-title">
+        <h2>后台运行</h2>
+        <label class="task-filter"><input v-model="showAllRuns" type="checkbox"/>显示全部</label>
+      </div>
+      <DataTable :rows="visibleRuns" :empty="runs.length ? '暂无符合条件的任务，勾选「显示全部」可查看其他记录。' : '暂无运行记录'" :columns="[{key:'runId',label:'任务ID'},{key:'type',label:'类型'},{key:'businessDate',label:'业务日期'},{key:'state',label:'状态',kind:'state'},{key:'startedAt',label:'真实开始时间',kind:'date'},{key:'finishedAt',label:'真实结束时间',kind:'date'}]"><template #actions="{row}"><button class="text-button" @click="trackRun(row.runId||row.id)">查询进度</button></template></DataTable>
+    </section>
+    <section class="panel">
+      <div class="section-title">
+        <h2>任务历史</h2>
+        <label class="task-filter"><input v-model="showAllHistory" type="checkbox"/>显示全部</label>
+      </div>
       <p class="notice">以下计数是每次执行批次的处理项数，不是累计订单数；处理项可能是订单、付款、定投或收益等业务。自动任务每5分钟检查一次，无待处理业务的空批次属于正常情况。旧记录不会追溯重算。</p>
-      <DataTable :rows="jobs" :columns="[{key:'id',label:'任务ID'}, {key:'type',label:'类型'}, {key:'date',label:'业务日期'}, {key:'outcome',label:'执行结果'}, {key:'counts',label:'处理情况'}, {key:'actualRunAt',label:'实际运行时间'}, {key:'createdAt',label:'业务时钟',kind:'date'}]">
+      <DataTable :rows="visibleHistory" :empty="jobs.length ? '暂无符合条件的任务，勾选「显示全部」可查看其他记录。' : '暂无任务记录'" :columns="[{key:'id',label:'任务ID'}, {key:'type',label:'类型'}, {key:'date',label:'业务日期'}, {key:'outcome',label:'执行结果'}, {key:'counts',label:'处理情况'}, {key:'actualRunAt',label:'实际运行时间'}, {key:'createdAt',label:'业务时钟',kind:'date'}]">
         <template #cell-type="{row}">{{ taskLabel(row.type) }}</template>
         <template #cell-outcome="{row}"><span class="status" :class="outcomeTone(row)">{{ label(jobOutcome(row)) }}</span></template>
         <template #cell-counts="{row}"><div class="job-counts"><span v-for="item in countItems.filter(item=>row[item.key]>0)" :key="item.key" class="status" :class="item.tone">{{ item.label }} {{ row[item.key] }} 项</span><span v-if="jobOutcome(row)==='NO_WORK'" class="muted">本次无需处理</span></div></template>
