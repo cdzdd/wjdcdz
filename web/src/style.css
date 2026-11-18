@@ -406,6 +406,12 @@ small {
 .section-title .muted {
   margin:0;
 }
+.section-title .task-filter {
+  flex-direction:row;
+  align-items:center;
+  margin-inline-start:auto;
+  white-space:nowrap;
+}
 .metrics {
   display:grid;
   grid-template-columns:repeat(4,minmax(0,1fr));

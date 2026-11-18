@@ -39,6 +39,12 @@ export function jobOutcome(row: Row): string {
   if (row.waiting > 0) return 'WAITING'
   return row.processed > 0 ? 'COMPLETED' : 'NO_WORK'
 }
+export function isEmptyJob(row: Row): boolean {
+  if (row.state) return row.state === 'NO_WORK'
+  if (row.status === 'NO_WORK') return true
+  if (row.status && row.status !== 'COMPLETED') return false
+  return [row.processed, row.waiting, row.failed].every(value => value === 0 || value === '0')
+}
 export const labels: Record<string, string> = {
   QUEUED:'排队中', RUNNING:'运行中', INTERRUPTED:'运行中断', REJECTED:'任务被拒绝', REJECTED_QUEUE_FULL:'队列已满', READY:'可执行', STALE:'预演已过期', REVERSED:'已冲正', RECLEAR:'重新清算', SEAL_APPLICATIONS:'申请封账', EXPORT_APPLICATIONS:'申请文件导出', IMPORT_MARKET:'行情导入', RECONCILE:'资产对账',
   ACTIVE: '可用', DISABLED: '已停用', UNBOUND: '已解绑', REPLACED: '已换卡', RECEIVABLE: '可收款', BLOCKED: '收款受阻',
